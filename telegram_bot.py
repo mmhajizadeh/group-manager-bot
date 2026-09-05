@@ -29,7 +29,7 @@ supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ایدی های عددی تلگرامی خودت و مدیران را اینجا بگذار
-ALLOWED_USERS = [1196500724] 
+ALLOWED_USERS = [1196500724, 6922089212] 
 ghaleb_last_reply = {}
 
 ai_enabled = True
