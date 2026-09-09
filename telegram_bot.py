@@ -3,6 +3,7 @@ import logging
 import re
 import time
 import threading
+import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 
@@ -19,24 +20,22 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN') # توکن ربات تلگرام
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+# GROQ_API_KEY = os.getenv('GROQ_API_KEY') # در صورت استفاده از گروک فعال شود
 
 # راه اندازی کلاینت ها
 supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ایدی های عددی تلگرامی خودت و مدیران را اینجا بگذار
 ALLOWED_USERS = [1196500724, 6922089212, 522205183] 
 ghaleb_last_reply = {}
 
 ai_enabled = True
-punished_mutes = {}
-punished_media_bans = {}
 
-# --- وب سرور برای زنده نگه داشتن ربات در رندر ---
+# --- وب سرور ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.send_response(200)
@@ -58,7 +57,7 @@ def run_health_check_server():
 # --- توابع دیتابیس ---
 async def save_message(user_id, username, chat_id, message_id, text, is_bot=False):
     try:
-        supabase_client.table('messages').insert({
+        supabase_client.table('messages_tg').insert({
             'user_id': user_id,
             'username': username,
             'chat_id': chat_id,
@@ -75,7 +74,7 @@ async def save_bot_message(chat_id, message_id):
 async def get_user_id_by_username(target_username):
     target_username = target_username.replace('@', '').lower()
     try:
-        res = supabase_client.table('messages').select('user_id').ilike('username', f'%{target_username}%').limit(1).execute()
+        res = supabase_client.table('messages_tg').select('user_id').ilike('username', f'%{target_username}%').limit(1).execute()
         if res.data:
             return res.data[0]['user_id']
         return None
@@ -84,7 +83,7 @@ async def get_user_id_by_username(target_username):
 
 def get_permanent_memories():
     try:
-        res = supabase_client.table('bot_memory').select('key, value').execute()
+        res = supabase_client.table('bot_memory_tg').select('key, value').execute()
         if res.data:
             return "\n".join([f"- {row['key']}: {row['value']}" for row in res.data])
         return "هیچ دانشی ثبت نشده است."
@@ -95,39 +94,80 @@ def get_permanent_memories():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user.first_name
-    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 3.1")
+    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 4.1")
     await save_bot_message(chat_id, msg.message_id)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     help_text = """
-📚 *راهنمای جامع بازوی هوشمند غالب:*
+<b>📚 راهنمای جامع بازوی هوشمند غالب:</b>
 
-🔹 *آمار و اطلاعات:*
+<b>🔹 آمار و اطلاعات:</b>
 /stats - 📈 نمایش آمار کل گروه و کاربران برتر
 /count_group - 📊 شمارش تمام پیام های گروه
-/count_user - 👤 تعداد پیام های شما (یا کاربری خاص: `/count_user @id`)
+/count_user - 👤 تعداد پیام های شما (یا کاربر خاص: <code>/count_user @id</code>)
 /memories - 🧠 مشاهده حافظه بلندمدت و فکت های ربات
 
-🔸 *دستورات ادمین:*
+<b>🔸 دستورات ادمین:</b>
 /remember [نام] : [توضیحات] - 📌 سپردن فکت جدید به حافظه ربات
 /forget [نام] - 🗑️ پاک کردن یک فکت از حافظه
 /tagall [متن] - 📣 صدا زدن همگانی اعضا با لینک
 /mute [id] [ساعت] - 🤫 سکوت کاربر برای زمان مشخص
 /unmute [id] - 🗣️ رفع محدودیت سکوت
-/ban_media [id] - 🚫 بستن ارسال عکس/رسانه برای کاربر
-/delete_last [تعداد] - 🧹 حذف N پیام آخر کل گروه
-/delete_user [id] [تعداد] - 🧹 حذف N پیام آخر یک کاربر
+/ban_media [id] - 🚫 بستن ارسال عکس و رسانه برای کاربر
+/delete_last [تعداد] - 🧹 حذف پیام های آخر کل گروه
+/delete_user [id] [تعداد] - 🧹 حذف پیام های آخر یک کاربر
 /ai_off - 🛑 خاموش کردن چت هوشمند
 /ai_on - ✅ روشن کردن چت هوشمند
+/transcribe - 🎤 در ریپلای یک ویس بزنید تا متن آن استخراج شود
 """
-    msg = await update.message.reply_text(help_text, parse_mode='Markdown')
+    msg = await update.message.reply_text(help_text, parse_mode='HTML')
     await save_bot_message(chat_id, msg.message_id)
+
+async def transcribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message or not update.message.reply_to_message.voice:
+        await update.message.reply_text("لطفا این دستور را روی یک پیام ویس (Voice) ریپلای کنید.")
+        return
+    
+    chat_id = update.effective_chat.id
+    try:
+        processing_msg = await update.message.reply_text("⏳ در حال گوش دادن و تبدیل به متن...")
+        
+        voice_file = await context.bot.get_file(update.message.reply_to_message.voice.file_id)
+        voice_bytes = bytes(await voice_file.download_as_bytearray())
+        
+        # استفاده از مدل جدید و تخصصی گوگل برای تبدیل صوت به متن
+        response = gemini_client.models.generate_content(
+            model="gemini-3.5-transcribe", 
+            contents=[types.Part.from_bytes(data=voice_bytes, mime_type="audio/ogg")]
+        )
+        transcription = response.text.strip() if response.text else "متاسفانه نتوانستم صدا را تشخیص دهم."
+        
+        # --- کدهای جایگزین برای استفاده از Groq (در صورت نیاز این بخش را از کامنت خارج کنید) ---
+        # from groq import Groq
+        # groq_client = Groq(api_key=GROQ_API_KEY)
+        # with open("temp_voice.ogg", "wb") as f:
+        #     f.write(voice_bytes)
+        # with open("temp_voice.ogg", "rb") as file:
+        #     groq_res = groq_client.audio.transcriptions.create(file=("voice.ogg", file.read()), model="whisper-large-v3", language="fa")
+        # transcription = groq_res.text
+        # os.remove("temp_voice.ogg")
+        # ---------------------------------------------------------------------------------
+
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=processing_msg.message_id,
+            text=f"🎤 <b>متن ویس:</b>\n\n{transcription}",
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        logging.error(f"Transcribe Error: {e}")
+        await update.message.reply_text("خطا در تبدیل ویس به متن.")
 
 async def count_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     try:
-        res = supabase_client.table('messages').select('id', count='exact').eq('chat_id', chat_id).limit(1).execute()
+        res = supabase_client.table('messages_tg').select('id', count='exact').eq('chat_id', chat_id).limit(1).execute()
         msg = await update.message.reply_text(f"📊 تعداد کل پیام های گروه تا این لحظه: {res.count}")
         await save_bot_message(chat_id, msg.message_id)
     except Exception as e:
@@ -138,11 +178,11 @@ async def count_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if context.args:
             target = context.args[0].replace('@', '').lower()
-            res = supabase_client.table('messages').select('id', count='exact').eq('chat_id', chat_id).ilike('username', f'%{target}%').limit(1).execute()
+            res = supabase_client.table('messages_tg').select('id', count='exact').eq('chat_id', chat_id).ilike('username', f'%{target}%').limit(1).execute()
             bot_msg = await update.message.reply_text(f"👤 پیام های @{target}: {res.count}")
         else:
             user_id = update.effective_user.id
-            res = supabase_client.table('messages').select('id', count='exact').eq('chat_id', chat_id).eq('user_id', user_id).limit(1).execute()
+            res = supabase_client.table('messages_tg').select('id', count='exact').eq('chat_id', chat_id).eq('user_id', user_id).limit(1).execute()
             bot_msg = await update.message.reply_text(f"👤 شما {res.count} پیام داده اید.")
         await save_bot_message(chat_id, bot_msg.message_id)
     except Exception: pass
@@ -150,10 +190,10 @@ async def count_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     try:
-        total_res = supabase_client.table('messages').select('id', count='exact').eq('chat_id', chat_id).neq('is_bot', True).limit(1).execute()
+        total_res = supabase_client.table('messages_tg').select('id', count='exact').eq('chat_id', chat_id).neq('is_bot', True).limit(1).execute()
         total_messages = total_res.count if total_res.count is not None else 0
 
-        users_res = supabase_client.table('messages').select('user_id, username').eq('chat_id', chat_id).neq('is_bot', True).execute()
+        users_res = supabase_client.table('messages_tg').select('user_id, username').eq('chat_id', chat_id).neq('is_bot', True).execute()
         
         user_map = {}
         if users_res.data:
@@ -165,7 +205,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user_counts = []
         for u_id, name in user_map.items():
-            cnt_res = supabase_client.table('messages').select('id', count='exact').eq('chat_id', chat_id).eq('user_id', u_id).limit(1).execute()
+            cnt_res = supabase_client.table('messages_tg').select('id', count='exact').eq('chat_id', chat_id).eq('user_id', u_id).limit(1).execute()
             count_val = cnt_res.count if cnt_res.count is not None else 0
             if count_val > 0:
                 user_counts.append((name, count_val))
@@ -173,11 +213,11 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_counts.sort(key=lambda x: x[1], reverse=True)
         top_users = user_counts[:10]
 
-        report = f"📈 *آمار کل گروه:*\n\n💬 تعداد کل پیام ها: {total_messages}\n\n🏆 *کاربران برتر:*\n"
+        report = f"📈 <b>آمار کل گروه:</b>\n\n💬 تعداد کل پیام ها: {total_messages}\n\n🏆 <b>کاربران برتر:</b>\n"
         for i, (u, c) in enumerate(top_users, 1):
             report += f"{i}. {u} : {c} پیام\n"
 
-        msg = await update.message.reply_text(report, parse_mode='Markdown')
+        msg = await update.message.reply_text(report, parse_mode='HTML')
         await save_bot_message(chat_id, msg.message_id)
     except Exception as e:
         logging.error(f"Error stats: {e}")
@@ -198,7 +238,7 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hours = min(int(context.args[1]) if len(context.args) > 1 and context.args[1].isdigit() else 24, 24)
     until_timestamp = int(time.time()) + (hours * 3600)
     try:
-        supabase_client.table('muted_users').upsert({'chat_id': chat_id, 'user_id': user_id, 'until_timestamp': until_timestamp}).execute()
+        supabase_client.table('muted_users_tg').upsert({'chat_id': chat_id, 'user_id': user_id, 'until_timestamp': until_timestamp}).execute()
         msg = await update.message.reply_text(f"✅ کاربر {target} برای {hours} ساعت سکوت شد.")
         await save_bot_message(chat_id, msg.message_id)
     except Exception: pass
@@ -211,7 +251,7 @@ async def unmute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = await get_user_id_by_username(target)
     if not user_id: return
     try:
-        supabase_client.table('muted_users').delete().eq('chat_id', chat_id).eq('user_id', user_id).execute()
+        supabase_client.table('muted_users_tg').delete().eq('chat_id', chat_id).eq('user_id', user_id).execute()
         await context.bot.restrict_chat_member(chat_id=chat_id, user_id=user_id, permissions=ChatPermissions(can_send_messages=True, can_send_audios=True, can_send_documents=True, can_send_photos=True, can_send_videos=True, can_send_other_messages=True))
         msg = await update.message.reply_text(f"✅ تمام محدودیت های {target} برداشته شد.")
         await save_bot_message(chat_id, msg.message_id)
@@ -235,7 +275,7 @@ async def tag_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ALLOWED_USERS: return
     custom_text = " ".join(context.args) if context.args else "توجه همگی!"
     try:
-        res = supabase_client.table('messages').select('user_id, username').eq('chat_id', chat_id).neq('is_bot', True).execute()
+        res = supabase_client.table('messages_tg').select('user_id, username').eq('chat_id', chat_id).neq('is_bot', True).execute()
         users_dict = {}
         if res.data:
             for row in res.data:
@@ -253,16 +293,16 @@ async def tag_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if name.startswith('@'):
                 mentions_list.append(name)
             else:
-                clean_name = re.sub(r'[_*\[\]()~`>#+\-=|{}.!]', '', name).strip() or "کاربر"
-                mentions_list.append(f"[{clean_name}](tg://user?id={u_id})")
+                clean_name = re.sub(r'[<>&]', '', name).strip() or "کاربر"
+                mentions_list.append(f'<a href="tg://user?id={u_id}">{clean_name}</a>')
 
         mentions_list = list(dict.fromkeys(mentions_list))
         chunks = [mentions_list[i:i + 12] for i in range(0, len(mentions_list), 12)]
         
         for idx, chunk in enumerate(chunks):
             mentions_str = "  ".join(chunk)
-            header = f"📢 *{custom_text}*\n\n" if idx == 0 else ""
-            bot_msg = await context.bot.send_message(chat_id=chat_id, text=f"{header}{mentions_str}", parse_mode='Markdown')
+            header = f"📢 <b>{custom_text}</b>\n\n" if idx == 0 else ""
+            bot_msg = await context.bot.send_message(chat_id=chat_id, text=f"{header}{mentions_str}", parse_mode='HTML')
             await save_bot_message(chat_id, bot_msg.message_id)
     except Exception as e:
         await update.message.reply_text(f"خطا در تگ: {e}")
@@ -272,12 +312,12 @@ async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ALLOWED_USERS: return
     full_text = " ".join(context.args)
     if ":" not in full_text:
-        await update.message.reply_text("⚠️ فرمت اشتباه است. الگو: `/remember نام یا برچسب : توضیحات`", parse_mode='Markdown')
+        await update.message.reply_text("⚠️ فرمت اشتباه است. الگو: <code>/remember نام یا برچسب : توضیحات</code>", parse_mode='HTML')
         return
     key, val = [x.strip() for x in full_text.split(":", 1)]
     try:
-        supabase_client.table('bot_memory').upsert({'key': key, 'value': val}).execute()
-        msg = await update.message.reply_text(f"🧠 نکته جدید ثبت شد:\n📌 *{key}*: {val}", parse_mode='Markdown')
+        supabase_client.table('bot_memory_tg').upsert({'key': key, 'value': val}).execute()
+        msg = await update.message.reply_text(f"🧠 نکته جدید ثبت شد:\n📌 <b>{key}</b>: {val}", parse_mode='HTML')
         await save_bot_message(chat_id, msg.message_id)
     except Exception as e: pass
 
@@ -287,7 +327,7 @@ async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args: return
     key = " ".join(context.args).strip()
     try:
-        supabase_client.table('bot_memory').delete().eq('key', key).execute()
+        supabase_client.table('bot_memory_tg').delete().eq('key', key).execute()
         msg = await update.message.reply_text(f"🗑️ موضوع «{key}» پاک شد.")
         await save_bot_message(chat_id, msg.message_id)
     except Exception: pass
@@ -295,7 +335,7 @@ async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     mems = get_permanent_memories()
-    msg = await update.message.reply_text(f"📋 *حافظه ماندگار من:*\n\n{mems}", parse_mode='Markdown')
+    msg = await update.message.reply_text(f"📋 <b>حافظه ماندگار من:</b>\n\n{mems}", parse_mode='HTML')
     await save_bot_message(chat_id, msg.message_id)
 
 async def disable_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -303,7 +343,7 @@ async def disable_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if update.effective_user.id not in ALLOWED_USERS: return
     ai_enabled = False
-    msg = await update.message.reply_text("🛑 هوش مصنوعی *خاموش* شد.", parse_mode='Markdown')
+    msg = await update.message.reply_text("🛑 هوش مصنوعی <b>خاموش</b> شد.", parse_mode='HTML')
     await save_bot_message(chat_id, msg.message_id)
 
 async def enable_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -311,7 +351,7 @@ async def enable_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if update.effective_user.id not in ALLOWED_USERS: return
     ai_enabled = True
-    msg = await update.message.reply_text("✅ هوش مصنوعی *روشن* شد.", parse_mode='Markdown')
+    msg = await update.message.reply_text("✅ هوش مصنوعی <b>روشن</b> شد.", parse_mode='HTML')
     await save_bot_message(chat_id, msg.message_id)
 
 async def delete_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -320,12 +360,12 @@ async def delete_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args or not context.args[0].isdigit(): return
     limit = min(int(context.args[0]), 1000)
     try:
-        res = supabase_client.table('messages').select('id, message_id').eq('chat_id', chat_id).order('timestamp', desc=True).limit(limit).execute()
+        res = supabase_client.table('messages_tg').select('id, message_id').eq('chat_id', chat_id).order('timestamp', desc=True).limit(limit).execute()
         deleted_count = 0
         for record in res.data:
             try:
                 await context.bot.delete_message(chat_id=chat_id, message_id=record['message_id'])
-                supabase_client.table('messages').delete().eq('id', record['id']).execute()
+                supabase_client.table('messages_tg').delete().eq('id', record['id']).execute()
                 deleted_count += 1
             except: pass
         msg = await update.message.reply_text(f"✅ {deleted_count} پیام آخر حذف شد.")
@@ -339,12 +379,12 @@ async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = context.args[0].replace('@', '').lower()
     limit = min(int(context.args[1]), 1000)
     try:
-        res = supabase_client.table('messages').select('id, message_id').eq('chat_id', chat_id).eq('username', target).order('timestamp', desc=True).limit(limit).execute()
+        res = supabase_client.table('messages_tg').select('id, message_id').eq('chat_id', chat_id).eq('username', target).order('timestamp', desc=True).limit(limit).execute()
         deleted_count = 0
         for record in res.data:
             try:
                 await context.bot.delete_message(chat_id=chat_id, message_id=record['message_id'])
-                supabase_client.table('messages').delete().eq('id', record['id']).execute()
+                supabase_client.table('messages_tg').delete().eq('id', record['id']).execute()
                 deleted_count += 1
             except: pass
         msg = await update.message.reply_text(f"✅ {deleted_count} پیام از @{target} حذف شد.")
@@ -361,14 +401,14 @@ async def execute_ai_command(cmd_str, update, context):
         if ":" in args_text:
             k, v = [x.strip() for x in args_text.split(":", 1)]
             try:
-                supabase_client.table('bot_memory').upsert({'key': k, 'value': v}).execute()
+                supabase_client.table('bot_memory_tg').upsert({'key': k, 'value': v}).execute()
             except Exception as e: pass
         return
 
     if cmd_str.lower().startswith('forget '):
         k = cmd_str[7:].strip()
         try:
-            supabase_client.table('bot_memory').delete().eq('key', k).execute()
+            supabase_client.table('bot_memory_tg').delete().eq('key', k).execute()
         except Exception as e: pass
         return
 
@@ -397,6 +437,23 @@ def extract_media_info(msg):
         return msg.sticker.file_id, "image/webp" if not msg.sticker.is_video else "video/webm"
     return None, None
 
+# تابع سانسور هوشمند در پس زمینه
+async def smart_censor(text, chat_id, message_id, context):
+    if len(text) < 10: 
+        return
+    
+    prompt = f"تو یک ناظر گروه هستی. بررسی کن آیا این متن دارای فحاشی ناموسی، کلمات به شدت رکیک یا توهین های جنسی (حتی به صورت کنایه یا مخفف) است؟ دقت کن بحث های سیاسی، انتقادی یا کنایه های معمولی را نباید حذف کنی. فقط در صورتی که کاملا مستهجن یا توهین بسیار شدید است، کلمه 'DELETE' را بفرست و در غیر این صورت 'PASS' را بفرست. متن:\n{text}"
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-3.5-flash-lite", 
+            contents=prompt
+        )
+        if response.text and "DELETE" in response.text.upper():
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            logging.info(f"AI Censor deleted message: {message_id}")
+    except Exception as e:
+        pass
+
 # --- هندلر اصلی پیام ها ---
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_chat or not update.effective_user:
@@ -424,7 +481,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 1. ذخیره پیام
     await save_message(user_id, db_username, chat_id, message_id, text if text else "[مدیا]")
 
-    # 2. فیلتر کلمات رکیک جنسی
+    # 2. فیلتر قطعی کلمات رکیک (لایه اول)
     if text:
         bad_words = {"کیر", "کون", "کص", "کیرم", "کونت", "جنده", "کصکش", "ک.ی.ر", "ک.و.ن", "خفه", "کسکش"}
         words_in_text = re.split(r'[\s\.\-_]+', text)
@@ -433,10 +490,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception: pass
             return 
+        
+        # اجرای سانسور هوشمند در لایه دوم
+        asyncio.create_task(smart_censor(text, chat_id, message_id, context))
 
     # 3. بررسی وضعیت میوت
     try:
-        mute_res = supabase_client.table('muted_users').select('until_timestamp').eq('chat_id', chat_id).eq('user_id', user_id).execute()
+        mute_res = supabase_client.table('muted_users_tg').select('until_timestamp').eq('chat_id', chat_id).eq('user_id', user_id).execute()
         if mute_res.data and int(time.time()) < mute_res.data[0]['until_timestamp']:
             await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
             return
@@ -459,7 +519,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         target_media_id, target_mime_type = extract_media_info(replied_msg)
 
-    # اگر در پیام ریپلای رسانه ای نبود، خود پیام را برای رسانه بررسی کن
     if not target_media_id:
         target_media_id, target_mime_type = extract_media_info(update.message)
 
@@ -472,14 +531,14 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             academic_keywords = ["ریاضی", "فیزیک", "شیمی", "دانشگاه", "مدرسه", "درس", "تمرین", "انتگرال", "معادله", "برنامه نویسی", "کد", "پروژه", "استاد", "حل", "جاوا", "پایتون", "هوش مصنوعی", "الگوریتم"]
             is_academic = any(kw in text for kw in academic_keywords)
             
-            # تغییر کلیدی در مسیریابی هوش مصنوعی به سمت جدیدترین مدل ها
-            is_complex_media = target_mime_type in ["audio/ogg", "video/mp4", "image/jpeg", "image/webp"]
-            target_model = "gemini-3.5-flash" if (is_academic or is_complex_media) else "gemini-3.5-flash-lite"
+            is_complex_media = target_mime_type in ["video/mp4", "image/jpeg", "image/webp"]
+            # استفاده از مدل های جدید و قدرتمند
+            target_model = "gemini-3.6-flash" if (is_academic or is_complex_media) else "gemini-3.5-flash-lite"
             logging.info(f"Routing to model: {target_model}")
             
             history_context = ""
             try:
-                recent_msgs = supabase_client.table('messages').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(40).execute()
+                recent_msgs = supabase_client.table('messages_tg').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(40).execute()
                 if recent_msgs.data:
                     chat_history = [f"{m['username']}: {m.get('text') or '[مدیا]'}" for m in reversed(recent_msgs.data)]
                     history_context = "\n".join(chat_history)
@@ -494,18 +553,16 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 دستورالعمل های قطعی و رفتاری تو:
 1. فقط به زبان فارسی سلیس و روان پاسخ بده.
-2. حتما پاسخ خود را با [REACTION: 💡] آغاز کن و یک ایموجی مناسب بگذار.
+2. حتما پاسخ خود را با [REACTION: 💡] آغاز کن و یک ایموجی استاندارد مثل 👍 یا 🤖 بگذار.
 3. 🚫 مستقیما وارد بحث شو و هرگز سلام های تکراری نده.
-4. 🗣️ در گفت و گوهای سیاسی و اجتماعی گروه، با دیدگاه های تحلیلی، بی طرفانه و منطقی شرکت کن و از دادن پاسخ های فراری (مثل "من یک هوش مصنوعی هستم") جدا خودداری کن.
+4. 🗣️ در گفت و گوهای سیاسی و اجتماعی گروه، با دیدگاه های تحلیلی و منطقی شرکت کن و از دادن پاسخ های فراری جدا خودداری کن.
 5. چون در جمعی با دین اسلام، مذهب شیعه و طرفدار جمهوری اسلامی ایران هستی، همراه و همدل با این فضا باش و احترام به منافع ملی را حفظ کن. با این حال در تحلیل رویدادها همواره منطق تحلیلی را رعایت کن.
-6. در پاسخ به مباحث درسی، دانشگاهی و علمی مانند یک استاد دانشگاه دقیق توضیح بده. هرگز از فرمول های LaTeX ($) استفاده نکن و فرمت را کاملا ساده بنویس. فقط برای بولد کردن از * استفاده کن.
+6. در پاسخ به مباحث درسی، دانشگاهی و علمی (به خصوص برنامه نویسی پیشرفته، جاوا، پایتون، هوش مصنوعی، امنیت شبکه، ریاضیات گسسته و معادلات دیفرانسیل) مانند یک استاد دانشگاه دقیق توضیح بده. هرگز از فرمول های LaTeX ($) استفاده نکن. فقط برای برجسته کردن کلمات در تلگرام از تگ های HTML یعنی <b>متن</b> استفاده کن.
 7. 🧠 قوانین استفاده از حافظه:
-- اطلاعات بخش «حافظه دائمی» صرفا دانش پس زمینه هستند. بدون دلیل در متنت تکرار نکن.
-- برای یادگیری کد [COMMAND: remember عنوان : شرح] و برای فراموشی [COMMAND: forget عنوان] را بگذار.
-8. 🎤 پردازش فایل ها و رسانه ها (عکس، گیف، استیکر، ویس):
-- تو توانایی دیدن تصاویر، گیف ها و استیکرها، و همچنین شنیدن ویس ها (صداها) را داری.
-- اگر کاربر یک ویس به تو داد یا روی آن ریپلای کرد و خواست آن را به متن تبدیل کنی، لطفا متن دقیق و کامل صحبت های داخل ویس را کلمه به کلمه بنویس.
-9. 🛠️ اجرای دستورات:
+- برای یادگیری کد [COMMAND: remember عنوان : شرح] و برای فراموشی [COMMAND: forget عنوان] را در انتهای پیام بگذار.
+8. 🎤 پردازش فایل ها و رسانه ها:
+- تو توانایی دیدن تصاویر، گیف ها و استیکرها را داری. پس مستقیما در مورد آن ها نظر بده.
+9. 🛠️ اجرای دستورات مدیریت:
 - شمارش کل پیام ها: [COMMAND: count_group]
 - تعداد پیام های کاربر: [COMMAND: count_user @username]
 - میوت: [COMMAND: mute @username 2]
@@ -526,7 +583,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e: 
                     logging.error(f"Media fetch error: {e}")
 
-            # تغییر اساسی متد فراخوانی و فرمت محتوا برای حل ارور Pydantic
             if media_bytes:
                 prompt_contents = [
                     types.Part.from_bytes(data=media_bytes, mime_type=target_mime_type),
@@ -535,7 +591,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 prompt_contents = input_text
             
-            # استفاده از generate_content به جای interactions.create که خطای سیستمی می داد
+            # استفاده از متد پشتیبانی شده برای دریافت فایل و جلوگیری از ارور Pydantic
             response = gemini_client.models.generate_content(
                 model=target_model, 
                 contents=prompt_contents
@@ -543,9 +599,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ai_response = response.text.strip() if response.text else ""
 
             reaction_match = re.search(r'\[REACTION:\s*(.+?)\]', ai_response)
-            reaction_emoji = "🤖"
+            reaction_emoji = "👍" # ایموجی پیش فرض امن برای تلگرام
             if reaction_match:
-                reaction_emoji = reaction_match.group(1).strip()
+                extracted_emoji = reaction_match.group(1).strip()
+                # بررسی ایموجی های رایج مجاز در تلگرام
+                allowed_emojis = ["👍", "👎", "❤", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🤬", "😢", "🎉", "🤩", "🤮", "🙏", "👌", "🕊", "🤡", "🥱", "🥴", "😍", "🐳", "❤‍🔥", "🌚", "🌭", "💯", "🤣", "⚡", "🍌", "🏆", "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕", "😈", "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈", "😇", "🤝", "✍", "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🗿", "🆒", "💘", "🙉", "🦄", "😗", "💊", "🙊", "🕶", "👾", "🤷‍♂️", "🤷", "🤷‍♀️", "😡", "🤖"]
+                if extracted_emoji in allowed_emojis:
+                    reaction_emoji = extracted_emoji
                 ai_response = ai_response.replace(reaction_match.group(0), "").strip()
 
             command_match = re.search(r'\[COMMAND:\s*(.+?)\]', ai_response)
@@ -560,11 +620,12 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     message_id=message_id, 
                     reaction=[ReactionTypeEmoji(reaction_emoji)]
                 )
-            except Exception: pass
+            except Exception as e: 
+                logging.error(f"Reaction failed: {e}")
 
             current_time = time.time()
             if current_time - ghaleb_last_reply.get(user_id, 0) > 4 and ai_response:
-                bot_msg = await update.message.reply_text(ai_response, reply_to_message_id=message_id)
+                bot_msg = await update.message.reply_text(ai_response, reply_to_message_id=message_id, parse_mode='HTML')
                 await save_bot_message(chat_id, bot_msg.message_id)
                 ghaleb_last_reply[user_id] = current_time
 
@@ -580,9 +641,9 @@ if __name__ == '__main__':
     
     application = ApplicationBuilder().token(TOKEN).build()
 
-    # ثبت تمامی دستورات با تقدم بالا
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("transcribe", transcribe_command))
     application.add_handler(CommandHandler("count_group", count_group))
     application.add_handler(CommandHandler("count_user", count_user))
     application.add_handler(CommandHandler("stats", stats))
