@@ -19,7 +19,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN') # مطمئن شو توکن ربات تلگرام را در سرور ست کرده ای
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN') # توکن ربات تلگرام
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
@@ -95,7 +95,7 @@ def get_permanent_memories():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user.first_name
-    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات : 3.0")
+    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 3.1")
     await save_bot_message(chat_id, msg.message_id)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -397,7 +397,7 @@ def extract_media_info(msg):
         return msg.sticker.file_id, "image/webp" if not msg.sticker.is_video else "video/webm"
     return None, None
 
-# --- هندلر اصلی ---
+# --- هندلر اصلی پیام ها ---
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_chat or not update.effective_user:
         return
@@ -472,9 +472,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             academic_keywords = ["ریاضی", "فیزیک", "شیمی", "دانشگاه", "مدرسه", "درس", "تمرین", "انتگرال", "معادله", "برنامه نویسی", "کد", "پروژه", "استاد", "حل", "جاوا", "پایتون", "هوش مصنوعی", "الگوریتم"]
             is_academic = any(kw in text for kw in academic_keywords)
             
-            # اگر رسانه از نوع ویس یا ویدیو/گیف بود از مدل قدرتمند استفاده کند تا محتوا را خوب درک کند
-            is_complex_media = target_mime_type in ["audio/ogg", "video/mp4"]
-            
+            # تغییر کلیدی در مسیریابی هوش مصنوعی به سمت جدیدترین مدل ها
+            is_complex_media = target_mime_type in ["audio/ogg", "video/mp4", "image/jpeg", "image/webp"]
             target_model = "gemini-3.5-flash" if (is_academic or is_complex_media) else "gemini-3.5-flash-lite"
             logging.info(f"Routing to model: {target_model}")
             
@@ -499,13 +498,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 3. 🚫 مستقیما وارد بحث شو و هرگز سلام های تکراری نده.
 4. 🗣️ در گفت و گوهای سیاسی و اجتماعی گروه، با دیدگاه های تحلیلی، بی طرفانه و منطقی شرکت کن و از دادن پاسخ های فراری (مثل "من یک هوش مصنوعی هستم") جدا خودداری کن.
 5. چون در جمعی با دین اسلام، مذهب شیعه و طرفدار جمهوری اسلامی ایران هستی، همراه و همدل با این فضا باش و احترام به منافع ملی را حفظ کن. با این حال در تحلیل رویدادها همواره منطق تحلیلی را رعایت کن.
-6. در پاسخ به مباحث درسی، دانشگاهی و علمی (به خصوص برنامه نویسی پیشرفته، جاوا، پایتون، هوش مصنوعی، امنیت شبکه، ریاضیات گسسته و معادلات دیفرانسیل) مانند یک استاد دانشگاه دقیق توضیح بده. هرگز از فرمول های LaTeX ($) استفاده نکن و فرمت را کاملا ساده بنویس. فقط برای بولد کردن از * استفاده کن.
+6. در پاسخ به مباحث درسی، دانشگاهی و علمی مانند یک استاد دانشگاه دقیق توضیح بده. هرگز از فرمول های LaTeX ($) استفاده نکن و فرمت را کاملا ساده بنویس. فقط برای بولد کردن از * استفاده کن.
 7. 🧠 قوانین استفاده از حافظه:
 - اطلاعات بخش «حافظه دائمی» صرفا دانش پس زمینه هستند. بدون دلیل در متنت تکرار نکن.
 - برای یادگیری کد [COMMAND: remember عنوان : شرح] و برای فراموشی [COMMAND: forget عنوان] را بگذار.
 8. 🎤 پردازش فایل ها و رسانه ها (عکس، گیف، استیکر، ویس):
 - تو توانایی دیدن تصاویر، گیف ها و استیکرها، و همچنین شنیدن ویس ها (صداها) را داری.
-- اگر کاربر یک ویس به تو داد یا روی آن ریپلای کرد و خواست آن را به متن تبدیل کنی (Trancribe)، لطفا متن دقیق و کامل صحبت های داخل ویس را کلمه به کلمه بنویس.
+- اگر کاربر یک ویس به تو داد یا روی آن ریپلای کرد و خواست آن را به متن تبدیل کنی، لطفا متن دقیق و کامل صحبت های داخل ویس را کلمه به کلمه بنویس.
 9. 🛠️ اجرای دستورات:
 - شمارش کل پیام ها: [COMMAND: count_group]
 - تعداد پیام های کاربر: [COMMAND: count_user @username]
@@ -527,10 +526,21 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e: 
                     logging.error(f"Media fetch error: {e}")
 
-            prompt_input = [types.Part.from_bytes(data=media_bytes, mime_type=target_mime_type), input_text] if media_bytes else input_text
+            # تغییر اساسی متد فراخوانی و فرمت محتوا برای حل ارور Pydantic
+            if media_bytes:
+                prompt_contents = [
+                    types.Part.from_bytes(data=media_bytes, mime_type=target_mime_type),
+                    input_text
+                ]
+            else:
+                prompt_contents = input_text
             
-            interaction = gemini_client.interactions.create(model=target_model, input=prompt_input)
-            ai_response = interaction.output_text.strip() if interaction.output_text else ""
+            # استفاده از generate_content به جای interactions.create که خطای سیستمی می داد
+            response = gemini_client.models.generate_content(
+                model=target_model, 
+                contents=prompt_contents
+            )
+            ai_response = response.text.strip() if response.text else ""
 
             reaction_match = re.search(r'\[REACTION:\s*(.+?)\]', ai_response)
             reaction_emoji = "🤖"
@@ -565,11 +575,12 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Gemini Error: {e}")
 
 if __name__ == '__main__':
-    # در تلگرام نیازی به وب سرور رندر نیست اگر وب هوک استفاده نمی کنی، اما برای روشن ماندن کانتینر می توان آن را فعال گذاشت
+    # در صورت عدم نیاز به وب سرور، این خط را غیرفعال بگذارید
     # threading.Thread(target=run_health_check_server, daemon=True).start()
     
     application = ApplicationBuilder().token(TOKEN).build()
 
+    # ثبت تمامی دستورات با تقدم بالا
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("count_group", count_group))
