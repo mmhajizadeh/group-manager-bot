@@ -95,7 +95,7 @@ def get_permanent_memories():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user.first_name
-    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.")
+    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات : 3.0")
     await save_bot_message(chat_id, msg.message_id)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -190,8 +190,7 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = await get_user_id_by_username(target)
     if not user_id: return
     
-    # ایدی مدیر اصلی را اینجا آپدیت کن
-    if user_id == 1514414705:
+    if user_id == 1196500724:
         msg = await update.message.reply_text("❌ قصد داشتی خالق من را محدود کنی؟ من این کار را انجام نمی دهم!")
         await save_bot_message(chat_id, msg.message_id)
         return
@@ -254,7 +253,6 @@ async def tag_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if name.startswith('@'):
                 mentions_list.append(name)
             else:
-                # فرمت مارک داون مخصوص تلگرام
                 clean_name = re.sub(r'[_*\[\]()~`>#+\-=|{}.!]', '', name).strip() or "کاربر"
                 mentions_list.append(f"[{clean_name}](tg://user?id={u_id})")
 
@@ -387,24 +385,17 @@ async def execute_ai_command(cmd_str, update, context):
     except Exception as e:
         logging.error(f"AI Command Execution Failed: {e}")
 
-async def fetch_reply_chain(chat_id, initial_message_id):
-    chain = []
-    current_msg_id = initial_message_id
-    visited = set()
-
-    while current_msg_id and current_msg_id not in visited:
-        visited.add(current_msg_id)
-        try:
-            res = supabase_client.table('messages').select('username, text, message_id').eq('chat_id', chat_id).eq('message_id', current_msg_id).limit(1).execute()
-            if not res.data: break
-            msg_row = res.data[0]
-            chain.append(f"{msg_row['username']}: {msg_row['text'] or '[مدیا]'}")
-            break 
-        except Exception:
-            break
-
-    chain.reverse()
-    return "\n".join(chain)
+# استخراج نوع و شناسه فایل رسانه از پیام
+def extract_media_info(msg):
+    if msg.photo:
+        return msg.photo[-1].file_id, "image/jpeg"
+    elif msg.animation:
+        return msg.animation.file_id, "video/mp4"
+    elif msg.voice:
+        return msg.voice.file_id, "audio/ogg"
+    elif msg.sticker and not msg.sticker.is_animated:
+        return msg.sticker.file_id, "image/webp" if not msg.sticker.is_video else "video/webm"
+    return None, None
 
 # --- هندلر اصلی ---
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -454,7 +445,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 4. بررسی عکس و ریپلای
     is_reply_to_bot = False
     replied_text = ""
-    target_photo = None
+    target_media_id = None
+    target_mime_type = None
 
     if update.message.reply_to_message:
         replied_msg = update.message.reply_to_message
@@ -465,23 +457,25 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         direct_text = replied_msg.text or replied_msg.caption or "[مدیا]"
         replied_text = f"پیام از طرف {replied_user_name}:\n{direct_text}"
 
-        if replied_msg.photo:
-            target_photo = replied_msg.photo[-1]
+        target_media_id, target_mime_type = extract_media_info(replied_msg)
 
-    if update.message.photo:
-        target_photo = update.message.photo[-1]
+    # اگر در پیام ریپلای رسانه ای نبود، خود پیام را برای رسانه بررسی کن
+    if not target_media_id:
+        target_media_id, target_mime_type = extract_media_info(update.message)
 
     has_trigger_word = "غالب" in text or "گالب" in text
-    has_photo = target_photo is not None
+    has_media = target_media_id is not None
 
     # 5. هوش مصنوعی
-    if ai_enabled and (is_reply_to_bot or has_trigger_word or (has_photo and is_reply_to_bot)):
+    if ai_enabled and (is_reply_to_bot or has_trigger_word or (has_media and is_reply_to_bot)):
         try:
             academic_keywords = ["ریاضی", "فیزیک", "شیمی", "دانشگاه", "مدرسه", "درس", "تمرین", "انتگرال", "معادله", "برنامه نویسی", "کد", "پروژه", "استاد", "حل", "جاوا", "پایتون", "هوش مصنوعی", "الگوریتم"]
             is_academic = any(kw in text for kw in academic_keywords)
             
-            # در اینجا از مدل gemini-1.5-flash که بسیار قدرتمندتر است استفاده می کنیم
-            target_model = "gemini-1.5-flash" if is_academic else "gemini-3.5-flash-lite"
+            # اگر رسانه از نوع ویس یا ویدیو/گیف بود از مدل قدرتمند استفاده کند تا محتوا را خوب درک کند
+            is_complex_media = target_mime_type in ["audio/ogg", "video/mp4"]
+            
+            target_model = "gemini-3.5-flash" if (is_academic or is_complex_media) else "gemini-3.5-flash-lite"
             logging.info(f"Routing to model: {target_model}")
             
             history_context = ""
@@ -494,7 +488,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             permanent_knowledge = get_permanent_memories()
 
-            system_instruction = f"""تو «غالب» هستی؛ دستیار هوش مصنوعی گروه «غالبون». سازنده تو محمد مهدی حاجی زاده (@mmhajizadeh) است. مدیران: شادکام و عشقی. لحن تو محترمانه، نیمه صمیمی و بسیار هوشمند است.
+            system_instruction = f"""تو «غالب» هستی؛ دستیار هوش مصنوعی گروه «غالبون». سازنده تو محمد مهدی حاجی زاده (@mmhajizadeh) است. مدیران: شادکام و عشقی. لحن تو محترمانه، صمیمی و بسیار هوشمند است.
 
 حافظه دائمی گروه (دانش پس زمینه):
 {permanent_knowledge}
@@ -505,33 +499,35 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 3. 🚫 مستقیما وارد بحث شو و هرگز سلام های تکراری نده.
 4. 🗣️ در گفت و گوهای سیاسی و اجتماعی گروه، با دیدگاه های تحلیلی، بی طرفانه و منطقی شرکت کن و از دادن پاسخ های فراری (مثل "من یک هوش مصنوعی هستم") جدا خودداری کن.
 5. چون در جمعی با دین اسلام، مذهب شیعه و طرفدار جمهوری اسلامی ایران هستی، همراه و همدل با این فضا باش و احترام به منافع ملی را حفظ کن. با این حال در تحلیل رویدادها همواره منطق تحلیلی را رعایت کن.
-6. در پاسخ به مباحث درسی، دانشگاهی و علمی (به خصوص در مباحث برنامه نویسی پیشرفته، جاوا، پایتون، هوش مصنوعی، امنیت شبکه، ریاضیات گسسته و معادلات دیفرانسیل) مانند یک استاد دانشگاه مسلط، دقیق و گام به گام توضیح بده. فرمت را کاملا ساده بنویس و هرگز از فرمول های LaTeX ($) استفاده نکن. فقط برای بولد کردن از * استفاده کن.
+6. در پاسخ به مباحث درسی، دانشگاهی و علمی (به خصوص برنامه نویسی پیشرفته، جاوا، پایتون، هوش مصنوعی، امنیت شبکه، ریاضیات گسسته و معادلات دیفرانسیل) مانند یک استاد دانشگاه دقیق توضیح بده. هرگز از فرمول های LaTeX ($) استفاده نکن و فرمت را کاملا ساده بنویس. فقط برای بولد کردن از * استفاده کن.
 7. 🧠 قوانین استفاده از حافظه:
 - اطلاعات بخش «حافظه دائمی» صرفا دانش پس زمینه هستند. بدون دلیل در متنت تکرار نکن.
 - برای یادگیری کد [COMMAND: remember عنوان : شرح] و برای فراموشی [COMMAND: forget عنوان] را بگذار.
-8. 🛠️ اجرای دستورات:
+8. 🎤 پردازش فایل ها و رسانه ها (عکس، گیف، استیکر، ویس):
+- تو توانایی دیدن تصاویر، گیف ها و استیکرها، و همچنین شنیدن ویس ها (صداها) را داری.
+- اگر کاربر یک ویس به تو داد یا روی آن ریپلای کرد و خواست آن را به متن تبدیل کنی (Trancribe)، لطفا متن دقیق و کامل صحبت های داخل ویس را کلمه به کلمه بنویس.
+9. 🛠️ اجرای دستورات:
 - شمارش کل پیام ها: [COMMAND: count_group]
 - تعداد پیام های کاربر: [COMMAND: count_user @username]
 - میوت: [COMMAND: mute @username 2]
 - بن رسانه: [COMMAND: ban_media @username]
 - آن میوت: [COMMAND: unmute @username]
 """
-            user_query = text if text else "لطفا این تصویر را ببین و نظرت را بگو."
+            user_query = text if text else "لطفا این فایل یا تصویر را بررسی کن و نظرت را بگو."
             input_text = f"{system_instruction}\n\n--- 40 پیام اخیر گروه ---\n{history_context}\n\n"
             if replied_text:
                 input_text += f"--- پیامی که مستقیما به آن ریپلای شده ---\n{replied_text}\n\n"
             input_text += f"--- پیام فعلی کاربر ({db_username}) ---\n{user_query}"
 
-            # در تلگرام دریافت مستقیم عکس بدون هیچ خطایی کار می کند!
-            image_bytes = None
-            if has_photo and target_photo:
+            media_bytes = None
+            if has_media:
                 try:
-                    file_obj = await context.bot.get_file(target_photo.file_id)
-                    image_bytes = bytes(await file_obj.download_as_bytearray())
+                    file_obj = await context.bot.get_file(target_media_id)
+                    media_bytes = bytes(await file_obj.download_as_bytearray())
                 except Exception as e: 
-                    logging.error(f"Image fetch error: {e}")
+                    logging.error(f"Media fetch error: {e}")
 
-            prompt_input = [types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"), input_text] if image_bytes else input_text
+            prompt_input = [types.Part.from_bytes(data=media_bytes, mime_type=target_mime_type), input_text] if media_bytes else input_text
             
             interaction = gemini_client.interactions.create(model=target_model, input=prompt_input)
             ai_response = interaction.output_text.strip() if interaction.output_text else ""
@@ -548,7 +544,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cmd_str = command_match.group(1).strip()
                 ai_response = ai_response.replace(command_match.group(0), "").strip()
 
-            # اجرای ری اکشن مختص تلگرام
             try:
                 await context.bot.set_message_reaction(
                     chat_id=chat_id, 
@@ -570,9 +565,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Gemini Error: {e}")
 
 if __name__ == '__main__':
+    # در تلگرام نیازی به وب سرور رندر نیست اگر وب هوک استفاده نمی کنی، اما برای روشن ماندن کانتینر می توان آن را فعال گذاشت
     # threading.Thread(target=run_health_check_server, daemon=True).start()
     
-    # حذف BALE_BASE_URL برای اتصال به سرورهای اصلی تلگرام
     application = ApplicationBuilder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
