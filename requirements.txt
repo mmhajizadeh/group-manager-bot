@@ -4,3 +4,5 @@ python-dotenv
 groq
 supabase
 google-genai
+pytz
+python-telegram-bot[job-queue]
