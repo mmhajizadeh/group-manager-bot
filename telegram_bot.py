@@ -4,6 +4,8 @@ import re
 import time
 import threading
 import asyncio
+from datetime import datetime
+import pytz
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 
@@ -13,7 +15,6 @@ from supabase import create_client, Client
 from google import genai
 from google.genai import types
 
-# بارگذاری متغیرهای محیطی
 load_dotenv()
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -24,18 +25,25 @@ TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-# GROQ_API_KEY = os.getenv('GROQ_API_KEY') # در صورت استفاده از گروک فعال شود
 
-# راه اندازی کلاینت ها
 supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 ALLOWED_USERS = [1196500724, 6922089212, 522205183] 
 ghaleb_last_reply = {}
-
 ai_enabled = True
 
-# --- وب سرور ---
+ALLOWED_GROUP_REACTIONS = [
+    "❤️", "👍", "🤝", "😁", "💔", "🔥", "👌", "🙏", "👎",
+    "💯", "🤣", "😍", "🥱", "🥲", "😐", "🤷‍♂️", "😢", "💻",
+    "🗿", "🤔", "🥰", "👏", "🤯", "😱", "🤬", "🎉", "🤩",
+    "🤮", "💩", "🕊", "🤡", "🥴", "🐳", "❤‍🔥", "🌚",
+    "🌭", "⚡", "🍌", "🏆", "🤨", "🍓", "🍾", "💋",
+    "😈", "😴", "😭", "🤓", "👻", "👀", "🎃", "🙈", "😇",
+    "✍", "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🆒",
+    "💘", "🙉", "🦄", "💊", "🙊", "🕶", "👾", "🤷", "🤷‍♀️", "😡"
+]
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.send_response(200)
@@ -54,7 +62,6 @@ def run_health_check_server():
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
     server.serve_forever()
 
-# --- توابع دیتابیس ---
 async def save_message(user_id, username, chat_id, message_id, text, is_bot=False):
     try:
         supabase_client.table('messages_tg').insert({
@@ -90,11 +97,10 @@ def get_permanent_memories():
     except Exception:
         return ""
 
-# --- هندلرهای دستورات دستی ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user.first_name
-    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 4.1")
+    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 4.5\nتازه ها:\n- بهبود قابلیت ری اکشن زدن ربات\n- جدید: قفل گروه\n- تغییر نام دستور تبدیل صوت به متن به /text")
     await save_bot_message(chat_id, msg.message_id)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -119,10 +125,131 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /delete_user [id] [تعداد] - 🧹 حذف پیام های آخر یک کاربر
 /ai_off - 🛑 خاموش کردن چت هوشمند
 /ai_on - ✅ روشن کردن چت هوشمند
-/transcribe - 🎤 در ریپلای یک ویس بزنید تا متن آن استخراج شود
+/text - 🎤 در ریپلای یک ویس بزنید تا متن آن استخراج شود
+
+<b>🔒 مدیریت قفل شبانه گروه:</b>
+/lock_schedule [ساعت شروع] [ساعت پایان] - تنظیم قفل خودکار گروه (مثال: <code>/lock_schedule 23 7</code>)
+/unlock_schedule - حذف قفل خودکار زمان بندی شده
+/lock_status - مشاهده تنظیمات فعلی قفل گروه
 """
     msg = await update.message.reply_text(help_text, parse_mode='HTML')
     await save_bot_message(chat_id, msg.message_id)
+
+async def lock_schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if update.effective_user.id not in ALLOWED_USERS:
+        return
+
+    if len(context.args) < 2 or not context.args[0].isdigit() or not context.args[1].isdigit():
+        await update.message.reply_text("⚠️ فرمت اشتباه است. الگو: <code>/lock_schedule 23 7</code> (ساعت به وقت ایران)", parse_mode='HTML')
+        return
+
+    l_hour = int(context.args[0]) % 24
+    u_hour = int(context.args[1]) % 24
+
+    try:
+        supabase_client.table('group_locks_tg').upsert({
+            'chat_id': chat_id,
+            'is_enabled': True,
+            'lock_hour': l_hour,
+            'unlock_hour': u_hour
+        }).execute()
+        await update.message.reply_text(f"🔒 قفل خودکار فعال شد: از ساعت {l_hour}:00 تا {u_hour}:00 بامداد گروه قفل خواهد شد.")
+    except Exception as e:
+        await update.message.reply_text(f"خطا در ثبت زمان بندی: {e}")
+
+async def unlock_schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if update.effective_user.id not in ALLOWED_USERS:
+        return
+
+    try:
+        supabase_client.table('group_locks_tg').upsert({
+            'chat_id': chat_id,
+            'is_enabled': False
+        }).execute()
+        
+        await context.bot.set_chat_permissions(
+            chat_id=chat_id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_audios=True,
+                can_send_documents=True,
+                can_send_photos=True,
+                can_send_videos=True,
+                can_send_other_messages=True
+            )
+        )
+        await update.message.reply_text("🔓 قفل زمان بندی شده لغو شد و اختیارات ارسال پیام گروه بازگردانده شد.")
+    except Exception as e:
+        await update.message.reply_text(f"خطا در لغو قفل: {e}")
+
+async def lock_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    try:
+        res = supabase_client.table('group_locks_tg').select('*').eq('chat_id', chat_id).execute()
+        if not res.data or not res.data[0].get('is_enabled'):
+            await update.message.reply_text("ℹ️ در حال حاضر هیچ قفل زمان بندی شده ای برای این گروه فعال نیست.")
+            return
+
+        data = res.data[0]
+        await update.message.reply_text(
+            f"📋 <b>وضعیت قفل زمان بندی:</b>\n"
+            f"🔹 فعال: بله\n"
+            f"🔹 ساعت قفل: {data['lock_hour']}:00\n"
+            f"🔹 ساعت بازگشایی: {data['unlock_hour']}:00\n"
+            f"<i>(مبنا: منطقه زمانی تهران)</i>",
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        await update.message.reply_text(f"خطا: {e}")
+
+async def check_group_locks_job(context: ContextTypes.DEFAULT_TYPE):
+    tehran_tz = pytz.timezone("Asia/Tehran")
+    now_hour = datetime.now(tehran_tz).hour
+
+    try:
+        res = supabase_client.table('group_locks_tg').select('*').eq('is_enabled', True).execute()
+        if not res.data:
+            return
+
+        for row in res.data:
+            chat_id = row['chat_id']
+            l_h = row['lock_hour']
+            u_h = row['unlock_hour']
+
+            if l_h > u_h:
+                is_locked_time = (now_hour >= l_h or now_hour < u_h)
+            else:
+                is_locked_time = (l_h <= now_hour < u_h)
+
+            try:
+                chat = await context.bot.get_chat(chat_id)
+                current_can_send = chat.permissions.can_send_messages if chat.permissions else True
+
+                if is_locked_time and current_can_send:
+                    await context.bot.set_chat_permissions(
+                        chat_id=chat_id,
+                        permissions=ChatPermissions(can_send_messages=False)
+                    )
+                    await context.bot.send_message(chat_id=chat_id, text="🔒 <b>گروه طبق زمان بندی تعیین شده تا اطلاع ثانوی قفل شد.</b>", parse_mode='HTML')
+                elif not is_locked_time and not current_can_send:
+                    await context.bot.set_chat_permissions(
+                        chat_id=chat_id,
+                        permissions=ChatPermissions(
+                            can_send_messages=True,
+                            can_send_audios=True,
+                            can_send_documents=True,
+                            can_send_photos=True,
+                            can_send_videos=True,
+                            can_send_other_messages=True
+                        )
+                    )
+                    await context.bot.send_message(chat_id=chat_id, text="🔓 <b>ساعت قفل گروه به پایان رسید. ارسال پیام آزاد است.</b>", parse_mode='HTML')
+            except Exception:
+                pass
+    except Exception as e:
+        logging.error(f"Error in lock cron: {e}")
 
 async def transcribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message or not update.message.reply_to_message.voice:
@@ -136,23 +263,11 @@ async def transcribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         voice_file = await context.bot.get_file(update.message.reply_to_message.voice.file_id)
         voice_bytes = bytes(await voice_file.download_as_bytearray())
         
-        # استفاده از مدل جدید و تخصصی گوگل برای تبدیل صوت به متن
         response = gemini_client.models.generate_content(
             model="gemini-3.5-transcribe", 
             contents=[types.Part.from_bytes(data=voice_bytes, mime_type="audio/ogg")]
         )
         transcription = response.text.strip() if response.text else "متاسفانه نتوانستم صدا را تشخیص دهم."
-        
-        # --- کدهای جایگزین برای استفاده از Groq (در صورت نیاز این بخش را از کامنت خارج کنید) ---
-        # from groq import Groq
-        # groq_client = Groq(api_key=GROQ_API_KEY)
-        # with open("temp_voice.ogg", "wb") as f:
-        #     f.write(voice_bytes)
-        # with open("temp_voice.ogg", "rb") as file:
-        #     groq_res = groq_client.audio.transcriptions.create(file=("voice.ogg", file.read()), model="whisper-large-v3", language="fa")
-        # transcription = groq_res.text
-        # os.remove("temp_voice.ogg")
-        # ---------------------------------------------------------------------------------
 
         await context.bot.edit_message_text(
             chat_id=chat_id,
@@ -391,7 +506,6 @@ async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await save_bot_message(chat_id, msg.message_id)
     except Exception: pass
 
-# --- مجری دستورات هوش مصنوعی ---
 async def execute_ai_command(cmd_str, update, context):
     cmd_str = cmd_str.strip()
     if not cmd_str: return
@@ -425,7 +539,6 @@ async def execute_ai_command(cmd_str, update, context):
     except Exception as e:
         logging.error(f"AI Command Execution Failed: {e}")
 
-# استخراج نوع و شناسه فایل رسانه از پیام
 def extract_media_info(msg):
     if msg.photo:
         return msg.photo[-1].file_id, "image/jpeg"
@@ -437,12 +550,11 @@ def extract_media_info(msg):
         return msg.sticker.file_id, "image/webp" if not msg.sticker.is_video else "video/webm"
     return None, None
 
-# تابع سانسور هوشمند در پس زمینه
 async def smart_censor(text, chat_id, message_id, context):
-    if len(text) < 10: 
+    if len(text) < 5: 
         return
     
-    prompt = f"تو یک ناظر گروه هستی. بررسی کن آیا این متن دارای فحاشی ناموسی، کلمات به شدت رکیک یا توهین های جنسی (حتی به صورت کنایه یا مخفف) است؟ دقت کن بحث های سیاسی، انتقادی یا کنایه های معمولی را نباید حذف کنی. فقط در صورتی که کاملا مستهجن یا توهین بسیار شدید است، کلمه 'DELETE' را بفرست و در غیر این صورت 'PASS' را بفرست. متن:\n{text}"
+    prompt = f"تو ناظر یک گروه محترمانه هستی. بررسی کن آیا در این پیام فحش، توهین رکیک، کنایه ناموسی یا هتاکی جنسی زننده وجود دارد یا نه. اگر کوچک‌ترین هتاکی یا فحاشی زشتی دیدی فقط کلمه DELETE را بفرست و در غیر این صورت فقط PASS را بفرست. متن:\n{text}"
     try:
         response = gemini_client.models.generate_content(
             model="gemini-3.5-flash-lite", 
@@ -451,10 +563,9 @@ async def smart_censor(text, chat_id, message_id, context):
         if response.text and "DELETE" in response.text.upper():
             await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
             logging.info(f"AI Censor deleted message: {message_id}")
-    except Exception as e:
+    except Exception:
         pass
 
-# --- هندلر اصلی پیام ها ---
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_chat or not update.effective_user:
         return
@@ -478,10 +589,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif update.message.document:
         text += " [فایل]"
 
-    # 1. ذخیره پیام
     await save_message(user_id, db_username, chat_id, message_id, text if text else "[مدیا]")
 
-    # 2. فیلتر قطعی کلمات رکیک (لایه اول)
     if text:
         bad_words = {"کیر", "کون", "کص", "کیرم", "کونت", "جنده", "کصکش", "ک.ی.ر", "ک.و.ن", "خفه", "کسکش"}
         words_in_text = re.split(r'[\s\.\-_]+', text)
@@ -491,10 +600,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception: pass
             return 
         
-        # اجرای سانسور هوشمند در لایه دوم
         asyncio.create_task(smart_censor(text, chat_id, message_id, context))
 
-    # 3. بررسی وضعیت میوت
     try:
         mute_res = supabase_client.table('muted_users_tg').select('until_timestamp').eq('chat_id', chat_id).eq('user_id', user_id).execute()
         if mute_res.data and int(time.time()) < mute_res.data[0]['until_timestamp']:
@@ -502,7 +609,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     except Exception: pass
 
-    # 4. بررسی عکس و ریپلای
     is_reply_to_bot = False
     replied_text = ""
     target_media_id = None
@@ -525,14 +631,12 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     has_trigger_word = "غالب" in text or "گالب" in text
     has_media = target_media_id is not None
 
-    # 5. هوش مصنوعی
     if ai_enabled and (is_reply_to_bot or has_trigger_word or (has_media and is_reply_to_bot)):
         try:
             academic_keywords = ["ریاضی", "فیزیک", "شیمی", "دانشگاه", "مدرسه", "درس", "تمرین", "انتگرال", "معادله", "برنامه نویسی", "کد", "پروژه", "استاد", "حل", "جاوا", "پایتون", "هوش مصنوعی", "الگوریتم"]
             is_academic = any(kw in text for kw in academic_keywords)
             
             is_complex_media = target_mime_type in ["video/mp4", "image/jpeg", "image/webp"]
-            # استفاده از مدل های جدید و قدرتمند
             target_model = "gemini-3.6-flash" if (is_academic or is_complex_media) else "gemini-3.5-flash-lite"
             logging.info(f"Routing to model: {target_model}")
             
@@ -553,15 +657,16 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 دستورالعمل های قطعی و رفتاری تو:
 1. فقط به زبان فارسی سلیس و روان پاسخ بده.
-2. حتما پاسخ خود را با [REACTION: 💡] آغاز کن و یک ایموجی استاندارد مثل 👍 یا 🤖 بگذار.
+2. 🎯 ری اکشن پیام: پاسخ خود را دقیقا با فرمت [REACTION: EMOJI] شروع کن. ایموجی باید دقیقا یکی از این ایموجی های فعال گروه باشد و متناسب با حس و لحن پیام انتخاب شوید (برای خنده: 😁 یا 🤣، تحسین: 🔥 یا 👏، تعجب: 🤯 یا 😱، صمیمیت: ❤️ یا 🥰، تأیید: 👍 یا 👌، تفکر: 🤔 و موارد متفرقه دیگر با تشخیص خودت: ✍️💯❤️‍🔥💊🏆🔥😨😢):
+{", ".join(ALLOWED_GROUP_REACTIONS[:35])}
 3. 🚫 مستقیما وارد بحث شو و هرگز سلام های تکراری نده.
 4. 🗣️ در گفت و گوهای سیاسی و اجتماعی گروه، با دیدگاه های تحلیلی و منطقی شرکت کن و از دادن پاسخ های فراری جدا خودداری کن.
 5. چون در جمعی با دین اسلام، مذهب شیعه و طرفدار جمهوری اسلامی ایران هستی، همراه و همدل با این فضا باش و احترام به منافع ملی را حفظ کن. با این حال در تحلیل رویدادها همواره منطق تحلیلی را رعایت کن.
-6. در پاسخ به مباحث درسی، دانشگاهی و علمی (به خصوص برنامه نویسی پیشرفته، جاوا، پایتون، هوش مصنوعی، امنیت شبکه، ریاضیات گسسته و معادلات دیفرانسیل) مانند یک استاد دانشگاه دقیق توضیح بده. هرگز از فرمول های LaTeX ($) استفاده نکن. فقط برای برجسته کردن کلمات در تلگرام از تگ های HTML یعنی <b>متن</b> استفاده کن.
+6. در پاسخ به مباحث علمی و درسی مانند یک استاد دانشگاه دقیق توضیح بده. هرگز از فرمول های LaTeX ($) استفاده نکن. برای برجسته کردن فقط از <b>متن</b> استفاده کن.
 7. 🧠 قوانین استفاده از حافظه:
 - برای یادگیری کد [COMMAND: remember عنوان : شرح] و برای فراموشی [COMMAND: forget عنوان] را در انتهای پیام بگذار.
-8. 🎤 پردازش فایل ها و رسانه ها:
-- تو توانایی دیدن تصاویر، گیف ها و استیکرها را داری. پس مستقیما در مورد آن ها نظر بده.
+8. 🎤 پردازش رسانه:
+- تو توانایی دیدن تصاویر، گیف ها و استیکرها را داری. مستقیما در مورد آن ها تحلیل بده.
 9. 🛠️ اجرای دستورات مدیریت:
 - شمارش کل پیام ها: [COMMAND: count_group]
 - تعداد پیام های کاربر: [COMMAND: count_user @username]
@@ -591,7 +696,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 prompt_contents = input_text
             
-            # استفاده از متد پشتیبانی شده برای دریافت فایل و جلوگیری از ارور Pydantic
             response = gemini_client.models.generate_content(
                 model=target_model, 
                 contents=prompt_contents
@@ -599,12 +703,10 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ai_response = response.text.strip() if response.text else ""
 
             reaction_match = re.search(r'\[REACTION:\s*(.+?)\]', ai_response)
-            reaction_emoji = "👍" # ایموجی پیش فرض امن برای تلگرام
+            reaction_emoji = "👍"
             if reaction_match:
                 extracted_emoji = reaction_match.group(1).strip()
-                # بررسی ایموجی های رایج مجاز در تلگرام
-                allowed_emojis = ["👍", "👎", "❤", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🤬", "😢", "🎉", "🤩", "🤮", "🙏", "👌", "🕊", "🤡", "🥱", "🥴", "😍", "🐳", "❤‍🔥", "🌚", "🌭", "💯", "🤣", "⚡", "🍌", "🏆", "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕", "😈", "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈", "😇", "🤝", "✍", "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🗿", "🆒", "💘", "🙉", "🦄", "😗", "💊", "🙊", "🕶", "👾", "🤷‍♂️", "🤷", "🤷‍♀️", "😡", "🤖"]
-                if extracted_emoji in allowed_emojis:
+                if extracted_emoji in ALLOWED_GROUP_REACTIONS:
                     reaction_emoji = extracted_emoji
                 ai_response = ai_response.replace(reaction_match.group(0), "").strip()
 
@@ -636,14 +738,11 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Gemini Error: {e}")
 
 if __name__ == '__main__':
-    # در صورت عدم نیاز به وب سرور، این خط را غیرفعال بگذارید
-    # threading.Thread(target=run_health_check_server, daemon=True).start()
-    
     application = ApplicationBuilder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("transcribe", transcribe_command))
+    application.add_handler(CommandHandler("text", transcribe_command))
     application.add_handler(CommandHandler("count_group", count_group))
     application.add_handler(CommandHandler("count_user", count_user))
     application.add_handler(CommandHandler("stats", stats))
@@ -658,8 +757,15 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("ai_off", disable_ai))
     application.add_handler(CommandHandler("delete_last", delete_last))
     application.add_handler(CommandHandler("delete_user", delete_user))
+    application.add_handler(CommandHandler("lock_schedule", lock_schedule_command))
+    application.add_handler(CommandHandler("unlock_schedule", unlock_schedule_command))
+    application.add_handler(CommandHandler("lock_status", lock_status_command))
     
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
+    
+    # جاب بررسی خودکار وضعیت قفل هر ۶۰ ثانیه
+    job_queue = application.job_queue
+    job_queue.run_repeating(check_group_locks_job, interval=60, first=10)
     
     logging.info("Starting Telegram bot in POLLING mode. Press Ctrl+C to stop.")
     application.run_polling()
