@@ -100,7 +100,7 @@ def get_permanent_memories():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user.first_name
-    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 4.5\nتازه ها:\n- بهبود قابلیت ری اکشن زدن ربات\n- جدید: قفل گروه\n- تغییر نام دستور تبدیل صوت به متن به /text")
+    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 4.6\nتازه ها:\n- بهبود قابلیت سانسور پیام ها")
     await save_bot_message(chat_id, msg.message_id)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -551,20 +551,34 @@ def extract_media_info(msg):
     return None, None
 
 async def smart_censor(text, chat_id, message_id, context):
-    if len(text) < 5: 
+    # نادیده گرفتن متن‌های خیلی کوتاه
+    if len(text.strip()) < 4: 
         return
     
-    prompt = f"تو ناظر یک گروه محترمانه هستی. بررسی کن آیا در این پیام فحش، توهین رکیک، کنایه ناموسی یا هتاکی جنسی زننده وجود دارد یا نه. اگر کوچک‌ترین هتاکی یا فحاشی زشتی دیدی فقط کلمه DELETE را بفرست و در غیر این صورت فقط PASS را بفرست. متن:\n{text}"
+    prompt = f"""تو مسئول پایش ادب در یک گروه دوستانه هستی. اعضا با هم شوخی می‌کنند، اصطلاحات عامیانه به کار می‌برند و بحث‌های تند سیاسی یا اجتماعی دارند.
+
+قوانین سخت‌گیرانه برای حذف:
+۱. شوخی‌های معمولی، کل‌کل، کلماتی مثل (دیوونه، احمق، خفه شو، بیشعور، گاو، سگ، زر نزن، اسکل) به هیچ وجه نباید حذف شوند.
+۲. انتقادهای تند، واژه‌های سیاسی و بحث‌های گروهی کاملاً آزاد هستند.
+۳. فقط و فقط زمانی دستور حذف صادر کن که پیام حاوی «فحش رکیک جنسی زننده، فحاشی مستقیم و شنیع ناموسی یا توصیفات مستهجن صریح» باشد.
+۴. اگر کمترین تردیدی داری که پیام ممکن است شوخی باشد، نادیده بگیر. اصل بر عدم حذف است.
+
+اگر پیام ۱۰۰٪ مستحق حذف است فقط بنویس: DELETE
+در غیر این صورت فقط بنویس: PASS
+
+متن پیام:
+{text}"""
+
     try:
         response = gemini_client.models.generate_content(
             model="gemini-3.5-flash-lite", 
             contents=prompt
         )
-        if response.text and "DELETE" in response.text.upper():
+        if response.text and "DELETE" in response.text.strip().upper():
             await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-            logging.info(f"AI Censor deleted message: {message_id}")
-    except Exception:
-        pass
+            logging.info(f"AI Censor deleted extreme message: {message_id}")
+    except Exception as e:
+        logging.error(f"Error in smart censor: {e}")
 
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_chat or not update.effective_user:
@@ -592,16 +606,18 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_message(user_id, db_username, chat_id, message_id, text if text else "[مدیا]")
 
     if text:
-        bad_words = {"کیر", "کون", "کص", "کیرم", "کونت", "جنده", "کصکش", "ک.ی.ر", "ک.و.ن", "خفه", "کسکش"}
-        words_in_text = re.split(r'[\s\.\-_]+', text)
-        if any(w in bad_words for w in words_in_text):
+        # حذف کلمات شوخی مثل 'خفه' و تمرکز صرف بر رکاکت‌های جنسی و ناموسی شدید
+        bad_words_pattern = r'\b(ک[يی]\.?ر[میتان]?|ک[وۥ]\.?ن[میتان]?|ک[صس][ییه]?|جنده|ک[صس]ک[صس]|مادر\s*جنده|خواهر\s*ک[صس]|لاشی)\b'
+        
+        # بررسی دقیق با regex
+        if re.search(bad_words_pattern, text, re.IGNORECASE):
             try:
                 await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception: pass
             return 
         
         asyncio.create_task(smart_censor(text, chat_id, message_id, context))
-
+        
     try:
         mute_res = supabase_client.table('muted_users_tg').select('until_timestamp').eq('chat_id', chat_id).eq('user_id', user_id).execute()
         if mute_res.data and int(time.time()) < mute_res.data[0]['until_timestamp']:
