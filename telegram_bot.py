@@ -100,7 +100,7 @@ def get_permanent_memories():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user.first_name
-    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 4.6\nتازه ها:\n- بهبود قابلیت سانسور پیام ها")
+    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 4.6\nتازه ها:\n- سانسور هوشمند تا اطلاع ثانوی خاموش شد.")
     await save_bot_message(chat_id, msg.message_id)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -550,35 +550,35 @@ def extract_media_info(msg):
         return msg.sticker.file_id, "image/webp" if not msg.sticker.is_video else "video/webm"
     return None, None
 
-async def smart_censor(text, chat_id, message_id, context):
-    # نادیده گرفتن متن‌های خیلی کوتاه
-    if len(text.strip()) < 4: 
-        return
+# async def smart_censor(text, chat_id, message_id, context):
+#     # نادیده گرفتن متن‌های خیلی کوتاه
+#     if len(text.strip()) < 4: 
+#         return
     
-    prompt = f"""تو مسئول پایش ادب در یک گروه دوستانه هستی. اعضا با هم شوخی می‌کنند، اصطلاحات عامیانه به کار می‌برند و بحث‌های تند سیاسی یا اجتماعی دارند.
+#     prompt = f"""تو مسئول پایش ادب در یک گروه دوستانه هستی. اعضا با هم شوخی می‌کنند، اصطلاحات عامیانه به کار می‌برند و بحث‌های تند سیاسی یا اجتماعی دارند.
 
-قوانین سخت‌گیرانه برای حذف:
-۱. شوخی‌های معمولی، کل‌کل، کلماتی مثل (دیوونه، احمق، خفه شو، بیشعور، گاو، سگ، زر نزن، اسکل) به هیچ وجه نباید حذف شوند.
-۲. انتقادهای تند، واژه‌های سیاسی و بحث‌های گروهی کاملاً آزاد هستند.
-۳. فقط و فقط زمانی دستور حذف صادر کن که پیام حاوی «فحش رکیک جنسی زننده، فحاشی مستقیم و شنیع ناموسی یا توصیفات مستهجن صریح» باشد.
-۴. اگر کمترین تردیدی داری که پیام ممکن است شوخی باشد، نادیده بگیر. اصل بر عدم حذف است.
+# قوانین سخت‌گیرانه برای حذف:
+# ۱. شوخی‌های معمولی، کل‌کل، کلماتی مثل (دیوونه، احمق، خفه شو، بیشعور، گاو، سگ، زر نزن، اسکل) به هیچ وجه نباید حذف شوند.
+# ۲. انتقادهای تند، واژه‌های سیاسی و بحث‌های گروهی کاملاً آزاد هستند.
+# ۳. فقط و فقط زمانی دستور حذف صادر کن که پیام حاوی «فحش رکیک جنسی زننده، فحاشی مستقیم و شنیع ناموسی یا توصیفات مستهجن صریح» باشد.
+# ۴. اگر کمترین تردیدی داری که پیام ممکن است شوخی باشد، نادیده بگیر. اصل بر عدم حذف است.
 
-اگر پیام ۱۰۰٪ مستحق حذف است فقط بنویس: DELETE
-در غیر این صورت فقط بنویس: PASS
+# اگر پیام ۱۰۰٪ مستحق حذف است فقط بنویس: DELETE
+# در غیر این صورت فقط بنویس: PASS
 
-متن پیام:
-{text}"""
+# متن پیام:
+# {text}"""
 
-    try:
-        response = gemini_client.models.generate_content(
-            model="gemini-3.5-flash-lite", 
-            contents=prompt
-        )
-        if response.text and "DELETE" in response.text.strip().upper():
-            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-            logging.info(f"AI Censor deleted extreme message: {message_id}")
-    except Exception as e:
-        logging.error(f"Error in smart censor: {e}")
+#     try:
+#         response = gemini_client.models.generate_content(
+#             model="gemini-3.5-flash-lite", 
+#             contents=prompt
+#         )
+#         if response.text and "DELETE" in response.text.strip().upper():
+#             await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+#             logging.info(f"AI Censor deleted extreme message: {message_id}")
+#     except Exception as e:
+#         logging.error(f"Error in smart censor: {e}")
 
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_chat or not update.effective_user:
@@ -616,7 +616,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception: pass
             return 
         
-        asyncio.create_task(smart_censor(text, chat_id, message_id, context))
+        # asyncio.create_task(smart_censor(text, chat_id, message_id, context))
         
     try:
         mute_res = supabase_client.table('muted_users_tg').select('until_timestamp').eq('chat_id', chat_id).eq('user_id', user_id).execute()
