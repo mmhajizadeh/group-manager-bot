@@ -607,7 +607,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text:
         # حذف کلمات شوخی مثل 'خفه' و تمرکز صرف بر رکاکت‌های جنسی و ناموسی شدید
-        bad_words_pattern = r'\b(ک[يی]\.?ر[میتان]?|ک[وۥ]\.?ن[میتان]?|ک[صس][ییه]?|جنده|ک[صس]ک[صس]|مادر\s*جنده|خواهر\s*ک[صس]|لاشی)\b'
+        # bad_words_pattern = r'\b(ک[يی]\.?ر[میتان]?|ک[وۥ]\.?ن[میتان]?|ک[صس][ییه]?|جنده|ک[صس]ک[صس]|مادر\s*جنده|خواهر\s*ک[صس]|لاشی)\b'
+        bad_words_pattern = []
         
         # بررسی دقیق با regex
         if re.search(bad_words_pattern, text, re.IGNORECASE):
