@@ -100,7 +100,7 @@ def get_permanent_memories():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user.first_name
-    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 4.6\nتازه ها:\n- سانسور هوشمند تا اطلاع ثانوی خاموش شد.")
+    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 4.6\nتازه ها:\n- سانسور هوشمند دوباره روشن شد.")
     await save_bot_message(chat_id, msg.message_id)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -607,8 +607,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text:
         # حذف کلمات شوخی مثل 'خفه' و تمرکز صرف بر رکاکت‌های جنسی و ناموسی شدید
-        # bad_words_pattern = r'\b(ک[يی]\.?ر[میتان]?|ک[وۥ]\.?ن[میتان]?|ک[صس][ییه]?|جنده|ک[صس]ک[صس]|مادر\s*جنده|خواهر\s*ک[صس]|لاشی)\b'
-        bad_words_pattern = []
+        bad_words_pattern = r'\b(ک[يی]\.?ر[میتان]?|ک[وۥ]\.?ن[میتان]?|ک[صس][ییه]?|جنده|ک[صس]ک[صس]|مادر\s*جنده|خواهر\s*ک[صس]|لاشی)\b'
+        # bad_words_pattern = []
         
         # بررسی دقیق با regex
         if re.search(bad_words_pattern, text, re.IGNORECASE):
