@@ -778,7 +778,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("unlock_schedule", unlock_schedule_command))
     application.add_handler(CommandHandler("lock_status", lock_status_command))
     
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
+    #application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
     
     # جاب بررسی خودکار وضعیت قفل هر ۶۰ ثانیه
     job_queue = application.job_queue
