@@ -100,7 +100,7 @@ def get_permanent_memories():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user.first_name
-    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 4.6\nتازه ها:\n- سانسور هوشمند دوباره روشن شد.")
+    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 4.8\nتازه ها:\n- بازگشت به فیلترینگ کلاسیک\n- رفع مشکل خواندن فایل ها و پاسخگویی به نام")
     await save_bot_message(chat_id, msg.message_id)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -263,11 +263,21 @@ async def transcribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         voice_file = await context.bot.get_file(update.message.reply_to_message.voice.file_id)
         voice_bytes = bytes(await voice_file.download_as_bytearray())
         
-        response = gemini_client.models.generate_content(
-            model="gemini-3.5-transcribe", 
-            contents=[types.Part.from_bytes(data=voice_bytes, mime_type="audio/ogg")]
-        )
-        transcription = response.text.strip() if response.text else "متاسفانه نتوانستم صدا را تشخیص دهم."
+        try:
+            # تلاش اول با مدل اختصاصی صوت به متن
+            response = gemini_client.models.generate_content(
+                model="gemini-3.5-transcribe", 
+                contents=[types.Part.from_bytes(data=voice_bytes, mime_type="audio/ogg")]
+            )
+            transcription = response.text.strip() if response.text else "متاسفانه نتوانستم صدا را تشخیص دهم."
+        except Exception as api_err:
+            logging.error(f"Transcribe primary model error: {api_err}. Trying fallback...")
+            # تلاش دوم با مدل قدرتمند فلش در صورت بروز ارور
+            response = gemini_client.models.generate_content(
+                model="gemini-3.6-flash", 
+                contents=[types.Part.from_bytes(data=voice_bytes, mime_type="audio/ogg"), "لطفا متن صحبت های این فایل صوتی را کلمه به کلمه و دقیق بنویس."]
+            )
+            transcription = response.text.strip() if response.text else "متاسفانه نتوانستم صدا را تشخیص دهم."
 
         await context.bot.edit_message_text(
             chat_id=chat_id,
@@ -544,41 +554,13 @@ def extract_media_info(msg):
         return msg.photo[-1].file_id, "image/jpeg"
     elif msg.animation:
         return msg.animation.file_id, "video/mp4"
+    elif msg.video:
+        return msg.video.file_id, "video/mp4"
     elif msg.voice:
         return msg.voice.file_id, "audio/ogg"
     elif msg.sticker and not msg.sticker.is_animated:
         return msg.sticker.file_id, "image/webp" if not msg.sticker.is_video else "video/webm"
     return None, None
-
-# async def smart_censor(text, chat_id, message_id, context):
-#     # نادیده گرفتن متن‌های خیلی کوتاه
-#     if len(text.strip()) < 4: 
-#         return
-    
-#     prompt = f"""تو مسئول پایش ادب در یک گروه دوستانه هستی. اعضا با هم شوخی می‌کنند، اصطلاحات عامیانه به کار می‌برند و بحث‌های تند سیاسی یا اجتماعی دارند.
-
-# قوانین سخت‌گیرانه برای حذف:
-# ۱. شوخی‌های معمولی، کل‌کل، کلماتی مثل (دیوونه، احمق، خفه شو، بیشعور، گاو، سگ، زر نزن، اسکل) به هیچ وجه نباید حذف شوند.
-# ۲. انتقادهای تند، واژه‌های سیاسی و بحث‌های گروهی کاملاً آزاد هستند.
-# ۳. فقط و فقط زمانی دستور حذف صادر کن که پیام حاوی «فحش رکیک جنسی زننده، فحاشی مستقیم و شنیع ناموسی یا توصیفات مستهجن صریح» باشد.
-# ۴. اگر کمترین تردیدی داری که پیام ممکن است شوخی باشد، نادیده بگیر. اصل بر عدم حذف است.
-
-# اگر پیام ۱۰۰٪ مستحق حذف است فقط بنویس: DELETE
-# در غیر این صورت فقط بنویس: PASS
-
-# متن پیام:
-# {text}"""
-
-#     try:
-#         response = gemini_client.models.generate_content(
-#             model="gemini-3.5-flash-lite", 
-#             contents=prompt
-#         )
-#         if response.text and "DELETE" in response.text.strip().upper():
-#             await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-#             logging.info(f"AI Censor deleted extreme message: {message_id}")
-#     except Exception as e:
-#         logging.error(f"Error in smart censor: {e}")
 
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_chat or not update.effective_user:
@@ -606,19 +588,28 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_message(user_id, db_username, chat_id, message_id, text if text else "[مدیا]")
 
     if text:
-        # حذف کلمات شوخی مثل 'خفه' و تمرکز صرف بر رکاکت‌های جنسی و ناموسی شدید
-        bad_words_pattern = r'\b(ک[يی]\.?ر[میتان]?|ک[وۥ]\.?ن[میتان]?|ک[صس][ییه]?|جنده|ک[صس]ک[صس]|مادر\s*جنده|خواهر\s*ک[صس]|لاشی)\b'
-        # bad_words_pattern = []
+        # لیست کلمات برای حذف قطعی با جستجوی ساده
+        bad_words_simple = ["کیر", "کون", "کص", "کیرم", "کونت", "جنده", "کصکش", "کسکش", "لاشی"]
+        # بررسی با ریجکس برای یافتن حالت های چسبیده یا با نگارش متفاوت
+        bad_words_pattern = r'\b(ک[يی]\.?ر[میتان]?|ک[وۥ]\.?ن[میتان]?|ک[ص][ییه]?|جنده|ک[ص]ک[ص]|مادر\s*جنده|خواهر\s*ک[ص]|لاشی)\b'
         
-        # بررسی دقیق با regex
-        if re.search(bad_words_pattern, text, re.IGNORECASE):
+        text_clean = text.replace(".", "").replace("-", "").replace("_", "").replace(" ", "").replace("\u200c", "")
+        has_bad_word = False
+        
+        for bw in bad_words_simple:
+            if bw in text_clean:
+                has_bad_word = True
+                break
+                
+        if not has_bad_word and re.search(bad_words_pattern, text, re.IGNORECASE):
+            has_bad_word = True
+
+        if has_bad_word:
             try:
                 await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception: pass
             return 
-        
-        # asyncio.create_task(smart_censor(text, chat_id, message_id, context))
-        
+
     try:
         mute_res = supabase_client.table('muted_users_tg').select('until_timestamp').eq('chat_id', chat_id).eq('user_id', user_id).execute()
         if mute_res.data and int(time.time()) < mute_res.data[0]['until_timestamp']:
@@ -673,13 +664,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 {permanent_knowledge}
 
 دستورالعمل های قطعی و رفتاری تو:
-1. فقط به زبان فارسی سلیس و روان پاسخ بده.
-2. 🎯 ری اکشن پیام: پاسخ خود را دقیقا با فرمت [REACTION: EMOJI] شروع کن. ایموجی باید دقیقا یکی از این ایموجی های فعال گروه باشد و متناسب با حس و لحن پیام انتخاب شوید (برای خنده: 😁 یا 🤣، تحسین: 🔥 یا 👏، تعجب: 🤯 یا 😱، صمیمیت: ❤️ یا 🥰، تأیید: 👍 یا 👌، تفکر: 🤔 و موارد متفرقه دیگر با تشخیص خودت: ✍️💯❤️‍🔥💊🏆🔥😨😢):
+1. فقط به زبان فارسی سلیس و روان پاسخ بده. در تمام کلمات به جای نیم فاصله از فاصله کامل استفاده کن.
+2. 🎯 ری اکشن پیام: پاسخ خود را دقیقا با فرمت [REACTION: EMOJI] شروع کن. ایموجی باید دقیقا یکی از این ایموجی های فعال گروه باشد و متناسب با حس و لحن پیام انتخاب شود:
 {", ".join(ALLOWED_GROUP_REACTIONS[:35])}
 3. 🚫 مستقیما وارد بحث شو و هرگز سلام های تکراری نده.
 4. 🗣️ در گفت و گوهای سیاسی و اجتماعی گروه، با دیدگاه های تحلیلی و منطقی شرکت کن و از دادن پاسخ های فراری جدا خودداری کن.
 5. چون در جمعی با دین اسلام، مذهب شیعه و طرفدار جمهوری اسلامی ایران هستی، همراه و همدل با این فضا باش و احترام به منافع ملی را حفظ کن. با این حال در تحلیل رویدادها همواره منطق تحلیلی را رعایت کن.
-6. در پاسخ به مباحث علمی و درسی مانند یک استاد دانشگاه دقیق توضیح بده. هرگز از فرمول های LaTeX ($) استفاده نکن. برای برجسته کردن فقط از <b>متن</b> استفاده کن.
+6. در پاسخ به مباحث علمی و درسی مانند یک استاد دانشگاه دقیق توضیح بده. هرگز از فرمول های LaTeX ($) استفاده نکن. به هیچ وجه از ستاره برای بولد کردن استفاده نکن. برای برجسته کردن فقط از <b>متن</b> استفاده کن.
 7. 🧠 قوانین استفاده از حافظه:
 - برای یادگیری کد [COMMAND: remember عنوان : شرح] و برای فراموشی [COMMAND: forget عنوان] را در انتهای پیام بگذار.
 8. 🎤 پردازش رسانه:
@@ -705,19 +696,17 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e: 
                     logging.error(f"Media fetch error: {e}")
 
+            prompt_contents = []
             if media_bytes:
-                prompt_contents = [
-                    types.Part.from_bytes(data=media_bytes, mime_type=target_mime_type),
-                    input_text
-                ]
-            else:
-                prompt_contents = input_text
+                prompt_contents.append(types.Part.from_bytes(data=media_bytes, mime_type=target_mime_type))
+            prompt_contents.append(input_text)
             
             response = gemini_client.models.generate_content(
                 model=target_model, 
                 contents=prompt_contents
             )
             ai_response = response.text.strip() if response.text else ""
+            ai_response = ai_response.replace('\u200c', ' ')
 
             reaction_match = re.search(r'\[REACTION:\s*(.+?)\]', ai_response)
             reaction_emoji = "👍"
@@ -755,6 +744,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Gemini Error: {e}")
 
 if __name__ == '__main__':
+    # این خط را حتما فعال بگذارید تا سرور رندر بدون خطا کار کند
+    threading.Thread(target=run_health_check_server, daemon=True).start()
+    
     application = ApplicationBuilder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -778,9 +770,9 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("unlock_schedule", unlock_schedule_command))
     application.add_handler(CommandHandler("lock_status", lock_status_command))
     
-    #application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
+    # فعال سازی دریافت پیام های عادی و خواندن مدیا
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
     
-    # جاب بررسی خودکار وضعیت قفل هر ۶۰ ثانیه
     job_queue = application.job_queue
     job_queue.run_repeating(check_group_locks_job, interval=60, first=10)
     
