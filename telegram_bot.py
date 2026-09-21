@@ -572,19 +572,34 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_message(user_id, db_username, chat_id, message_id, text if text else "[مدیا]")
 
     if text:
-        bad_words_simple = ["کیر", "کون", "کص", "کیرم", "کونت", "جنده", "کصکش", "کسکش", "لاشی"]
-        bad_words_pattern = r'\b(ک[يی]\.?ر[میتان]?|ک[وۥ]\.?ن[میتان]?|ک[ص][ییه]?|جنده|ک[ص]ک[ص]|مادر\s*جنده|خواهر\s*ک[ص]|لاشی)\b'
+        # ۱. تجزیه متن به توکن‌های جداگانه با حذف علائم نگارشی
+        tokens = re.findall(r'[\w]+', text.replace('\u200c', ''))
         
-        text_clean = text.replace(".", "").replace("-", "").replace("_", "").replace(" ", "").replace('\u200c', '')
+        # ۲. ریشه‌های ممنوعه به عنوان کلمه مستقل یا پسوندهای رایج مالکیت/جمع
+        bad_patterns = [
+            r'^(ک[يیی]?\.?ر[میتان]?|ک[يیی]?\.?ر[هیا]ت?)$',
+            r'^(ک[وۥ]?\.?ن[میتان]?|ک[وۥ]?\.?ن[هیا]ت?|ک[وۥ]نی)$',
+            r'^(ک[ص][میتان]?|ک[ص]خول|ک[ص]شعر|ک[ص]کش[ها]?|ک[ص]لیس)$',
+            r'^(جنده|جند[هگی]|لاشی)$'
+        ]
+        
         has_bad_word = False
         
-        for bw in bad_words_simple:
-            if bw in text_clean:
+        # بررسی توکن به توکن کلمات مستقل (جلوگیری از تشخیص اشتباه تکون، مسکونی، ترکوندی و...)
+        for token in tokens:
+            if any(re.match(pattern, token, re.IGNORECASE) for pattern in bad_patterns):
                 has_bad_word = True
                 break
                 
-        if not has_bad_word and re.search(bad_words_pattern, text, re.IGNORECASE):
-            has_bad_word = True
+        # بررسی فحش‌های ترکیبی چندکلمه‌ای
+        if not has_bad_word:
+            compound_patterns = [
+                r'مادر\s*جنده',
+                r'خواهر\s*ک[ص]',
+                r'پدر\s*سگ'
+            ]
+            if any(re.search(cp, text, re.IGNORECASE) for cp in compound_patterns):
+                has_bad_word = True
 
         if has_bad_word:
             try:
