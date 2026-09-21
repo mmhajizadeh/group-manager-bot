@@ -2,7 +2,6 @@ import os
 import logging
 import re
 import time
-import threading
 from dotenv import load_dotenv
 
 from telegram import Update, ReactionTypeEmoji
@@ -33,7 +32,7 @@ ALLOWED_GROUP_REACTIONS = [
     "💯", "😎", "🤷‍♂️", "🤷‍♀️", "🤦‍♂️", "🤦‍♀️", "👀"
 ]
 
-async def save_bot_message(chat_id, message_id, text):
+async def save_bot_message(chat_id, message_id, text=""):
     try:
         supabase_client.table('messages_tg').insert({
             'user_id': 0,
@@ -77,6 +76,91 @@ def extract_media_info(msg):
         return msg.sticker.file_id, "image/webp" if not msg.sticker.is_video else "video/webm"
     return None, None
 
+last_processed_ghaleb_msg_id = 0
+last_cross_reply_time = 0
+
+async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
+    global last_processed_ghaleb_msg_id, last_cross_reply_time
+    if not ai_enabled: return
+    
+    try:
+        res = supabase_client.table('bot_memory_tg').select('key, value').execute()
+        mem_dict = {row['key']: row['value'] for row in res.data} if res.data else {}
+
+        if mem_dict.get('debate_active') == 'true' and mem_dict.get('debate_turn') == 'maghloub':
+            next_time = float(mem_dict.get('debate_next_time', 0))
+            if time.time() >= next_time:
+                chat_id = int(mem_dict.get('debate_chat_id', 0))
+                topic = mem_dict.get('debate_topic', '')
+                turn_count = int(mem_dict.get('debate_turn_count', 0))
+                
+                turn_count += 1
+                is_last_turn = (turn_count >= 6)
+
+                ghaleb_msg_res = supabase_client.table('messages_tg').select('text').eq('chat_id', chat_id).eq('username', 'غالب').order('timestamp', desc=True).limit(1).execute()
+                ghaleb_last_text = ghaleb_msg_res.data[0]['text'] if ghaleb_msg_res.data else "بحث را شروع کن."
+
+                prompt = f"تو در حال مناظره با «غالب» هستی. موضوع مناظره: {topic}.\nاخرین حرف غالب در گروه این بود: {ghaleb_last_text}\nجواب او را با طعنه و فکت بکوب و استدلال خودت را بگو. فاصله ها را کامل رعایت کن."
+                
+                if is_last_turn:
+                    prompt += "\nتوجه: این پیام آخر مناظره است. بحث را با یک نتیجه گیری کوبنده تمام کن."
+                else:
+                    prompt += "\nپاسخ را کاملا کوتاه و حداکثر در 5 جمله بنویس."
+
+                history_res = supabase_client.table('messages_tg').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(10).execute()
+                history_context = "\n".join([f"{m['username']}: {m.get('text')}" for m in reversed(history_res.data)]) if history_res.data else ""
+                input_text = f"{prompt}\n\n--- پیام های اخیر ---\n{history_context}"
+
+                safety_settings = [
+                    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                ]
+                config = types.GenerateContentConfig(safety_settings=safety_settings)
+
+                response = gemini_client.models.generate_content(model="gemini-3.6-flash", contents=input_text, config=config)
+                
+                ai_response = ""
+                if response.text:
+                    ai_response = response.text.strip()
+                elif response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                    ai_response = response.candidates[0].content.parts[0].text.strip()
+                
+                ai_response = ai_response.replace('\u200c', ' ')
+                ai_response = re.sub(r'\[REACTION:\s*.+?\]', '', ai_response).strip()
+
+                if ai_response:
+                    bot_msg = await context.bot.send_message(chat_id=chat_id, text=ai_response, parse_mode='HTML')
+                    await save_bot_message(chat_id, bot_msg.message_id, ai_response)
+                    
+                    supabase_client.table('bot_memory_tg').upsert({'key': 'debate_turn_count', 'value': str(turn_count)}).execute()
+                    
+                    if is_last_turn:
+                        supabase_client.table('bot_memory_tg').upsert({'key': 'debate_active', 'value': 'false'}).execute()
+                    else:
+                        supabase_client.table('bot_memory_tg').upsert({'key': 'debate_turn', 'value': 'ghaleb'}).execute()
+                        supabase_client.table('bot_memory_tg').upsert({'key': 'debate_next_time', 'value': str(time.time() + 120)}).execute()
+        
+        if mem_dict.get('debate_active') != 'true':
+            last_msg_res = supabase_client.table('messages_tg').select('message_id, username, text, chat_id').eq('is_bot', True).eq('username', 'غالب').order('timestamp', desc=True).limit(1).execute()
+            if last_msg_res.data:
+                last_msg = last_msg_res.data[0]
+                if last_msg['message_id'] > last_processed_ghaleb_msg_id:
+                    last_processed_ghaleb_msg_id = last_msg['message_id']
+                    if "مغلوب" in last_msg.get('text', '') and (time.time() - last_cross_reply_time > 60):
+                        last_cross_reply_time = time.time()
+                        chat_id = last_msg['chat_id']
+                        input_text = f"غالب در پیامی به تو اشاره کرده و گفته: {last_msg['text']}\nجواب او را با طعنه و کاملا کوتاه (حداکثر 2 جمله) بده. فاصله ها را رعایت کن."
+                        response = gemini_client.models.generate_content(model="gemini-3.5-flash-lite", contents=input_text)
+                        ai_response = response.text.strip().replace('\u200c', ' ') if response.text else ""
+                        ai_response = re.sub(r'\[REACTION:\s*.+?\]', '', ai_response).strip()
+                        if ai_response:
+                            bot_msg = await context.bot.send_message(chat_id=chat_id, text=ai_response, reply_to_message_id=last_msg['message_id'], parse_mode='HTML')
+                            await save_bot_message(chat_id, bot_msg.message_id, ai_response)
+
+    except Exception as e:
+        logging.error(f"Bot interaction job error: {e}")
+
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_chat or not update.effective_user:
         return
@@ -84,10 +168,10 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     display_name = update.effective_user.first_name or "کاربر"
-    
+
     real_username = update.effective_user.username
     db_username = f"@{real_username}" if real_username else display_name
-    
+
     message_id = update.message.message_id
     text = update.message.text or update.message.caption or ""
 
@@ -99,10 +183,10 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.reply_to_message:
         replied_msg = update.message.reply_to_message
         replied_user_name = replied_msg.from_user.first_name if replied_msg.from_user else "کاربر"
-        
+
         if replied_msg.from_user and replied_msg.from_user.id == context.bot.id:
             is_reply_to_bot = True
-        
+
         direct_text = replied_msg.text or replied_msg.caption or "[مدیا]"
         replied_text = f"پیام از طرف {replied_user_name}:\n{direct_text}"
 
@@ -128,9 +212,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             academic_keywords = ["ریاضی", "فیزیک", "شیمی", "دانشگاه", "کد", "پروژه"]
             is_academic = any(kw in text for kw in academic_keywords)
             is_complex_media = target_mime_type in ["video/mp4", "image/jpeg", "image/webp"]
-            
+
             target_model = "gemini-3.6-flash" if (is_academic or is_complex_media) else "gemini-3.5-flash-lite"
-            
+
             history_context = ""
             try:
                 recent_msgs = supabase_client.table('messages_tg').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(40).execute()
@@ -153,6 +237,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 6. لحن تو باید با اعتماد به نفس بالا، کمی مغرورانه و در عین حال به شدت مستدل باشد. از کلمات قلمبه سلمبه کمتر استفاده کن و بیشتر با منطق برنده باش.
 7. اگر تصویر یا ویسی بود، مستقیما در مورد محتوای آن تحلیل انتقادی خود را بگو.
 8. برای برجسته کردن متن در تلگرام فقط از تگ <b>متن</b> استفاده کن و از ستاره (*) استفاده نکن.
+9. ⚠️ پاسخ هایت باید کاملا کوتاه، گزیده و حداکثر در 3 یا 4 جمله باشد. از نوشتن متن های طولانی جدا خودداری کن. گاهی می توانی در یک خط هم منظورت را برسانی!
 """
             user_query = text if text else "لطفا این فایل یا تصویر را بررسی کن و نظرت را بگو."
             input_text = f"{system_instruction}\n\n--- 40 پیام اخیر گروه ---\n{history_context}\n\n"
@@ -172,8 +257,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if media_bytes:
                 prompt_contents.append(types.Part.from_bytes(data=media_bytes, mime_type=target_mime_type))
             prompt_contents.append(input_text)
-            
-            # تنظیمات ایمنی برای جلوگیری از بلاک شدن بحث‌های سیاسی و تند
+
             safety_settings = [
                 types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
                 types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
@@ -193,10 +277,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
                 ai_response = response.candidates[0].content.parts[0].text.strip()
 
-            logging.info(f"Maghloub output received: {ai_response[:40] if ai_response else '[EMPTY]'}")
-
             if not ai_response:
-                logging.warning("Maghloub received empty response from Gemini.")
                 return
 
             ai_response = ai_response.replace('\u200c', ' ')
@@ -215,15 +296,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await save_bot_message(chat_id, bot_msg.message_id, ai_response)
                 maghloub_last_reply[user_id] = current_time
 
-                # ثبت ری‌اکشن پس از ارسال پیام
                 try:
                     await context.bot.set_message_reaction(
                         chat_id=chat_id, 
                         message_id=message_id, 
                         reaction=[ReactionTypeEmoji(reaction_emoji)]
                     )
-                except Exception as r_err:
-                    logging.error(f"Reaction error: {r_err}")
+                except Exception: pass
 
         except Exception as e:
             logging.error(f"Maghloub Gemini Error: {e}")
@@ -236,6 +315,9 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("maghloub_on", enable_ai))
     
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
+    
+    job_queue = application.job_queue
+    job_queue.run_repeating(bot_interaction_job, interval=10, first=5)
     
     logging.info("Starting Maghloub Telegram bot in POLLING mode. Press Ctrl+C to stop.")
     application.run_polling()
