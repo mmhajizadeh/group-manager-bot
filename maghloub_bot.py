@@ -117,12 +117,22 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not target_media_id:
         target_media_id, target_mime_type = extract_media_info(update.message)
 
-    # کلمات تحریک کننده مغلوب
-    has_trigger_word = any(word in text for word in ["مغلوب", "مغلوبم"])
+    # چاپ پیام دریافتی در لاگ برای اطمینان از رسیدن آپدیت
+    logging.info(f"Received message from {db_username}: {text[:30] if text else '[مدیا]'}")
+
+    # تطبیق نام مغلوب و یوزرنیم
+    bot_info = await context.bot.get_me()
+    bot_username = bot_info.username.lower() if bot_info.username else ""
     
-    # مغلوب می تواند گاهی که اسم "غالب" می آید خود به خود دخالت کند (برای جذابیت)
+    text_lower = text.lower()
+    has_trigger_word = (
+        "مغلوب" in text or 
+        "مغلوبم" in text or 
+        (bot_username and f"@{bot_username}" in text_lower)
+    )
+
+    # مداخله موردی در بحث‌های مربوط به غالب (در صورت تمایل)
     if "غالب" in text and not has_trigger_word and not is_reply_to_bot:
-        # با احتمال 30 درصد وارد بحثی می شود که غالب در آن منشن شده
         import random
         if random.random() < 0.30:
             has_trigger_word = True
