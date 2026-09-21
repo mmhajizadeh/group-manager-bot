@@ -109,7 +109,7 @@ async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
                 else:
                     prompt += "\nپاسخ را کاملا کوتاه و حداکثر در 4 جمله بنویس."
 
-                history_res = supabase_client.table('messages_tg').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(10).execute()
+                history_res = supabase_client.table('messages_tg').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(15).execute()
                 history_context = "\n".join([f"{m['username']}: {m.get('text')}" for m in reversed(history_res.data)]) if history_res.data else ""
                 input_text = f"{prompt}\n\n--- پیام های اخیر ---\n{history_context}"
 
@@ -151,7 +151,7 @@ async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
                 last_msg = last_msg_res.data[0]
                 if last_msg['message_id'] > last_processed_ghaleb_msg_id:
                     last_processed_ghaleb_msg_id = last_msg['message_id']
-                    if "مغلوب" in last_msg.get('text', '') and (time.time() - maghloub_global_last_reply >= 60):
+                    if "مغلوب" in last_msg.get('text', '') and (time.time() - maghloub_global_last_reply >= 30):
                         last_cross_reply_time = time.time()
                         chat_id = last_msg['chat_id']
                         input_text = f"غالب در پیامی به تو اشاره کرده و گفته: {last_msg['text']}\nجواب او را با طعنه و کاملا کوتاه (حداکثر 2 جمله) بده. فاصله ها را رعایت کن."
