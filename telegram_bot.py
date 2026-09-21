@@ -601,11 +601,11 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if any(re.search(cp, text, re.IGNORECASE) for cp in compound_patterns):
                 has_bad_word = True
 
-        if has_bad_word:
-            try:
-                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-            except Exception: pass
-            return 
+        # if has_bad_word:
+        #     try:
+        #         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        #     except Exception: pass
+        #     return 
 
     try:
         mute_res = supabase_client.table('muted_users_tg').select('until_timestamp').eq('chat_id', chat_id).eq('user_id', user_id).execute()
