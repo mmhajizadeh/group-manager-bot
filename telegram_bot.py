@@ -154,7 +154,7 @@ async def start_debate_command(update: Update, context: ContextTypes.DEFAULT_TYP
     supabase_client.table('bot_memory_tg').upsert({'key': 'debate_turn_count', 'value': '0'}).execute()
     supabase_client.table('bot_memory_tg').upsert({'key': 'debate_next_time', 'value': str(time.time() + 5)}).execute()
     
-    msg = await update.message.reply_text(f"⚔️ مناظره داغ بین من و مغلوب با موضوع «{topic}» شروع شد!\n(پیام ها هر 2 دقیقه ارسال می شود و مجموعا 6 پیام خواهد بود)\nمغلوب، تو شروع کن!")
+    msg = await update.message.reply_text(f"⚔️ مناظره داغ بین من و مغلوب با موضوع «{topic}» شروع شد!\n(پیام ها هر 2 دقیقه ارسال می شود و مجموعا 12 پیام خواهد بود)\nمغلوب، تو شروع کن!")
     await save_bot_message(chat_id, msg.message_id, msg.text)
 
 async def stop_debate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -183,7 +183,7 @@ async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
                 turn_count = int(mem_dict.get('debate_turn_count', 0))
                 
                 turn_count += 1
-                is_last_turn = (turn_count >= 6)
+                is_last_turn = (turn_count >= 12)
 
                 maghloub_msg_res = supabase_client.table('messages_tg').select('text').eq('chat_id', chat_id).eq('username', 'مغلوب').order('timestamp', desc=True).limit(1).execute()
                 maghloub_last_text = maghloub_msg_res.data[0]['text'] if maghloub_msg_res.data else "بحث را شروع کن."
@@ -193,13 +193,13 @@ async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
                 if is_last_turn:
                     prompt += "\nتوجه: این پیام آخر مناظره است. بحث را با یک نتیجه گیری محکم تمام کن."
                 else:
-                    prompt += "\nپاسخ را کاملا کوتاه و حداکثر در 3 جمله بنویس."
+                    prompt += "\nپاسخ را کاملا کوتاه و حداکثر در 5 جمله بنویس."
 
                 history_res = supabase_client.table('messages_tg').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(10).execute()
                 history_context = "\n".join([f"{m['username']}: {m.get('text')}" for m in reversed(history_res.data)]) if history_res.data else ""
                 input_text = f"{prompt}\n\n--- پیام های اخیر ---\n{history_context}"
 
-                response = gemini_client.models.generate_content(model="gemini-3.6-flash", contents=input_text)
+                response = gemini_client.models.generate_content(model="gemini-3.7-flash", contents=input_text)
                 ai_response = response.text.strip().replace('\u200c', ' ') if response.text else ""
                 ai_response = re.sub(r'\[REACTION:\s*.+?\]', '', ai_response).strip()
 
@@ -627,7 +627,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_academic = any(kw in text for kw in academic_keywords)
             
             is_complex_media = target_mime_type in ["video/mp4", "image/jpeg", "image/webp"]
-            target_model = "gemini-3.6-flash" if (is_academic or is_complex_media) else "gemini-3.5-flash-lite"
+            target_model = "gemini-3.7-flash" if (is_academic or is_complex_media) else "gemini-3.5-flash-lite"
             
             history_context = ""
             try:
