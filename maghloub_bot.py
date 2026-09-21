@@ -24,7 +24,7 @@ GEMINI_API_KEY = os.getenv('MAGHLOUB_GEMINI_API_KEY')
 supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
-maghloub_last_reply = {}
+maghloub_global_last_reply = 0
 ai_enabled = True
 
 ALLOWED_GROUP_REACTIONS = [
@@ -46,23 +46,25 @@ async def save_bot_message(chat_id, message_id, text=""):
         logging.error(f"Database error: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global maghloub_global_last_reply
     chat_id = update.effective_chat.id
     user = update.effective_user.first_name
     msg = await update.message.reply_text(f"آزاد باش {user}. من مغلوب هستم. اینجا هستم تا تفکرات سنتی و دیکته شده را به چالش بکشم. اگر جرات بحث داری، من آماده ام.")
+    maghloub_global_last_reply = time.time()
     await save_bot_message(chat_id, msg.message_id, msg.text)
 
 async def disable_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ai_enabled
     if update.effective_user.id in [1196500724, 6922089212, 522205183]:
         ai_enabled = False
-        msg = await update.message.reply_text("🛑 باشه، فعلا سکوت می کنم. حقیقت همیشه تلخ است.")
+        msg = await update.message.reply_text("🛑 گفت و گوی عادی مغلوب خاموش شد. از این پس فقط در مناظره های رسمی شرکت می کنم.")
         await save_bot_message(update.effective_chat.id, msg.message_id, msg.text)
 
 async def enable_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ai_enabled
     if update.effective_user.id in [1196500724, 6922089212, 522205183]:
         ai_enabled = True
-        msg = await update.message.reply_text("✅ دوباره برگشتم تا خواب راحت را از تعصبات شما بگیرم.")
+        msg = await update.message.reply_text("✅ گفت و گوی عمومی مغلوب مجددا روشن شد.")
         await save_bot_message(update.effective_chat.id, msg.message_id, msg.text)
 
 def extract_media_info(msg):
@@ -80,13 +82,13 @@ last_processed_ghaleb_msg_id = 0
 last_cross_reply_time = 0
 
 async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
-    global last_processed_ghaleb_msg_id, last_cross_reply_time
-    if not ai_enabled: return
+    global last_processed_ghaleb_msg_id, last_cross_reply_time, maghloub_global_last_reply
     
     try:
         res = supabase_client.table('bot_memory_tg').select('key, value').execute()
         mem_dict = {row['key']: row['value'] for row in res.data} if res.data else {}
 
+        # بخش مناظره: حتی اگر ai_enabled خاموش باشد، این بخش با قدرت کار می کند!
         if mem_dict.get('debate_active') == 'true' and mem_dict.get('debate_turn') == 'maghloub':
             next_time = float(mem_dict.get('debate_next_time', 0))
             if time.time() >= next_time:
@@ -105,7 +107,7 @@ async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
                 if is_last_turn:
                     prompt += "\nتوجه: این پیام آخر مناظره است. بحث را با یک نتیجه گیری کوبنده تمام کن."
                 else:
-                    prompt += "\nپاسخ را کاملا کوتاه و حداکثر در 5 جمله بنویس."
+                    prompt += "\nپاسخ را کاملا کوتاه و حداکثر در 4 جمله بنویس."
 
                 history_res = supabase_client.table('messages_tg').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(10).execute()
                 history_context = "\n".join([f"{m['username']}: {m.get('text')}" for m in reversed(history_res.data)]) if history_res.data else ""
@@ -131,6 +133,7 @@ async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
 
                 if ai_response:
                     bot_msg = await context.bot.send_message(chat_id=chat_id, text=ai_response, parse_mode='HTML')
+                    maghloub_global_last_reply = time.time()
                     await save_bot_message(chat_id, bot_msg.message_id, ai_response)
                     
                     supabase_client.table('bot_memory_tg').upsert({'key': 'debate_turn_count', 'value': str(turn_count)}).execute()
@@ -141,13 +144,14 @@ async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
                         supabase_client.table('bot_memory_tg').upsert({'key': 'debate_turn', 'value': 'ghaleb'}).execute()
                         supabase_client.table('bot_memory_tg').upsert({'key': 'debate_next_time', 'value': str(time.time() + 120)}).execute()
         
-        if mem_dict.get('debate_active') != 'true':
+        # پاسخ به غالب در چت عادی (فقط اگر ai_enabled روشن باشد اجرا می شود)
+        if ai_enabled and mem_dict.get('debate_active') != 'true':
             last_msg_res = supabase_client.table('messages_tg').select('message_id, username, text, chat_id').eq('is_bot', True).eq('username', 'غالب').order('timestamp', desc=True).limit(1).execute()
             if last_msg_res.data:
                 last_msg = last_msg_res.data[0]
                 if last_msg['message_id'] > last_processed_ghaleb_msg_id:
                     last_processed_ghaleb_msg_id = last_msg['message_id']
-                    if "مغلوب" in last_msg.get('text', '') and (time.time() - last_cross_reply_time > 60):
+                    if "مغلوب" in last_msg.get('text', '') and (time.time() - maghloub_global_last_reply >= 60):
                         last_cross_reply_time = time.time()
                         chat_id = last_msg['chat_id']
                         input_text = f"غالب در پیامی به تو اشاره کرده و گفته: {last_msg['text']}\nجواب او را با طعنه و کاملا کوتاه (حداکثر 2 جمله) بده. فاصله ها را رعایت کن."
@@ -156,13 +160,20 @@ async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
                         ai_response = re.sub(r'\[REACTION:\s*.+?\]', '', ai_response).strip()
                         if ai_response:
                             bot_msg = await context.bot.send_message(chat_id=chat_id, text=ai_response, reply_to_message_id=last_msg['message_id'], parse_mode='HTML')
+                            maghloub_global_last_reply = time.time()
                             await save_bot_message(chat_id, bot_msg.message_id, ai_response)
 
     except Exception as e:
         logging.error(f"Bot interaction job error: {e}")
 
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global maghloub_global_last_reply
+
     if not update.message or not update.effective_chat or not update.effective_user:
+        return
+
+    # اگر مغلوب خاموش شده باشد، هیچ جوابی به اعضای گروه نمی دهد
+    if not ai_enabled:
         return
 
     chat_id = update.effective_chat.id
@@ -195,8 +206,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not target_media_id:
         target_media_id, target_mime_type = extract_media_info(update.message)
 
-    logging.info(f"Received message from {db_username}: {text[:30] if text else '[مدیا]'}")
-
     text_lower = text.lower()
     has_trigger_word = ("مغلوب" in text or "مغلوبم" in text)
 
@@ -207,7 +216,12 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     has_media = target_media_id is not None
 
-    if ai_enabled and (is_reply_to_bot or has_trigger_word):
+    if is_reply_to_bot or has_trigger_word:
+        time_diff = time.time() - maghloub_global_last_reply
+        if time_diff < 60:
+            logging.info(f"Cooldown active for Maghloub: {int(60 - time_diff)} seconds remaining. Skipping.")
+            return
+
         try:
             academic_keywords = ["ریاضی", "فیزیک", "شیمی", "دانشگاه", "کد", "پروژه"]
             is_academic = any(kw in text for kw in academic_keywords)
@@ -290,19 +304,17 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reaction_emoji = extracted_emoji
                 ai_response = ai_response.replace(reaction_match.group(0), "").strip()
 
-            current_time = time.time()
-            if current_time - maghloub_last_reply.get(user_id, 0) > 3 and ai_response:
-                bot_msg = await update.message.reply_text(ai_response, reply_to_message_id=message_id, parse_mode='HTML')
-                await save_bot_message(chat_id, bot_msg.message_id, ai_response)
-                maghloub_last_reply[user_id] = current_time
+            bot_msg = await update.message.reply_text(ai_response, reply_to_message_id=message_id, parse_mode='HTML')
+            maghloub_global_last_reply = time.time()
+            await save_bot_message(chat_id, bot_msg.message_id, ai_response)
 
-                try:
-                    await context.bot.set_message_reaction(
-                        chat_id=chat_id, 
-                        message_id=message_id, 
-                        reaction=[ReactionTypeEmoji(reaction_emoji)]
-                    )
-                except Exception: pass
+            try:
+                await context.bot.set_message_reaction(
+                    chat_id=chat_id, 
+                    message_id=message_id, 
+                    reaction=[ReactionTypeEmoji(reaction_emoji)]
+                )
+            except Exception: pass
 
         except Exception as e:
             logging.error(f"Maghloub Gemini Error: {e}")
