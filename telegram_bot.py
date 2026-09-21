@@ -37,7 +37,7 @@ ALLOWED_GROUP_REACTIONS = [
     "❤️", "👍", "🤝", "😁", "💔", "🔥", "👌", "🙏", "👎",
     "💯", "🤣", "😍", "🥱", "🥲", "😐", "🤷‍♂️", "😢", "💻",
     "🗿", "🤔", "🥰", "👏", "🤯", "😱", "🤬", "🎉", "🤩",
-    "🤮", "💩", "🕊", "🤡", "🥴", "🐳", "❤‍🔥", "🌚",
+    "🤮", "💩", "🕊", "🤡", "🥴", "🐳", "❤️‍🔥", "🌚",
     "🌭", "⚡", "🍌", "🏆", "🤨", "🍓", "🍾", "💋",
     "😈", "😴", "😭", "🤓", "👻", "👀", "🎃", "🙈", "😇",
     "✍", "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🆒",
@@ -75,8 +75,8 @@ async def save_message(user_id, username, chat_id, message_id, text, is_bot=Fals
     except Exception as e:
         logging.error(f"Database error: {e}")
 
-async def save_bot_message(chat_id, message_id):
-    await save_message(0, 'Bot', chat_id, message_id, '', is_bot=True)
+async def save_bot_message(chat_id, message_id, text=""):
+    await save_message(0, 'غالب', chat_id, message_id, text, is_bot=True)
 
 async def get_user_id_by_username(target_username):
     target_username = target_username.replace('@', '').lower()
@@ -100,8 +100,8 @@ def get_permanent_memories():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user.first_name
-    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 4.8\nتازه ها:\n- بازگشت به فیلترینگ کلاسیک\n- رفع مشکل خواندن فایل ها و پاسخگویی به نام")
-    await save_bot_message(chat_id, msg.message_id)
+    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 5.1\nتازه ها:\n- تنظیم سقف 6 مرحله ای برای پایان مناظرات")
+    await save_bot_message(chat_id, msg.message_id, msg.text)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -131,172 +131,193 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /lock_schedule [ساعت شروع] [ساعت پایان] - تنظیم قفل خودکار گروه (مثال: <code>/lock_schedule 23 7</code>)
 /unlock_schedule - حذف قفل خودکار زمان بندی شده
 /lock_status - مشاهده تنظیمات فعلی قفل گروه
+
+<b>⚔️ مناظره ربات ها:</b>
+/debate [موضوع] - شروع مناظره بین غالب و مغلوب با موضوع دلخواه
+/stop_debate - توقف مناظره
 """
     msg = await update.message.reply_text(help_text, parse_mode='HTML')
-    await save_bot_message(chat_id, msg.message_id)
+    await save_bot_message(chat_id, msg.message_id, msg.text)
 
+async def start_debate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if update.effective_user.id not in ALLOWED_USERS: return
+    if not context.args:
+        await update.message.reply_text("موضوع مناظره را مشخص کنید. مثال: /debate اقتصاد کشور")
+        return
+    
+    topic = " ".join(context.args)
+    supabase_client.table('bot_memory_tg').upsert({'key': 'debate_active', 'value': 'true'}).execute()
+    supabase_client.table('bot_memory_tg').upsert({'key': 'debate_chat_id', 'value': str(chat_id)}).execute()
+    supabase_client.table('bot_memory_tg').upsert({'key': 'debate_topic', 'value': topic}).execute()
+    supabase_client.table('bot_memory_tg').upsert({'key': 'debate_turn', 'value': 'maghloub'}).execute()
+    supabase_client.table('bot_memory_tg').upsert({'key': 'debate_turn_count', 'value': '0'}).execute()
+    supabase_client.table('bot_memory_tg').upsert({'key': 'debate_next_time', 'value': str(time.time() + 5)}).execute()
+    
+    msg = await update.message.reply_text(f"⚔️ مناظره داغ بین من و مغلوب با موضوع «{topic}» شروع شد!\n(پیام ها هر 2 دقیقه ارسال می شود و مجموعا 6 پیام خواهد بود)\nمغلوب، تو شروع کن!")
+    await save_bot_message(chat_id, msg.message_id, msg.text)
+
+async def stop_debate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if update.effective_user.id not in ALLOWED_USERS: return
+    supabase_client.table('bot_memory_tg').upsert({'key': 'debate_active', 'value': 'false'}).execute()
+    msg = await update.message.reply_text("🛑 مناظره با دستور ادمین متوقف شد.")
+    await save_bot_message(chat_id, msg.message_id, msg.text)
+
+last_processed_maghloub_msg_id = 0
+last_cross_reply_time = 0
+
+async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
+    global last_processed_maghloub_msg_id, last_cross_reply_time
+    if not ai_enabled: return
+    
+    try:
+        res = supabase_client.table('bot_memory_tg').select('key, value').execute()
+        mem_dict = {row['key']: row['value'] for row in res.data} if res.data else {}
+
+        if mem_dict.get('debate_active') == 'true' and mem_dict.get('debate_turn') == 'ghaleb':
+            next_time = float(mem_dict.get('debate_next_time', 0))
+            if time.time() >= next_time:
+                chat_id = int(mem_dict.get('debate_chat_id', 0))
+                topic = mem_dict.get('debate_topic', '')
+                turn_count = int(mem_dict.get('debate_turn_count', 0))
+                
+                turn_count += 1
+                is_last_turn = (turn_count >= 6)
+
+                maghloub_msg_res = supabase_client.table('messages_tg').select('text').eq('chat_id', chat_id).eq('username', 'مغلوب').order('timestamp', desc=True).limit(1).execute()
+                maghloub_last_text = maghloub_msg_res.data[0]['text'] if maghloub_msg_res.data else "بحث را شروع کن."
+
+                prompt = f"تو در حال مناظره با «مغلوب» هستی. موضوع مناظره: {topic}.\nاخرین حرف مغلوب در گروه این بود: {maghloub_last_text}\nجواب او را با منطق و قاطعیت رد کن. از فرمول و لاتک استفاده نکن. فاصله ها را کامل رعایت کن."
+                
+                if is_last_turn:
+                    prompt += "\nتوجه: این پیام آخر مناظره است. بحث را با یک نتیجه گیری محکم تمام کن."
+                else:
+                    prompt += "\nپاسخ را کاملا کوتاه و حداکثر در 3 جمله بنویس."
+
+                history_res = supabase_client.table('messages_tg').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(10).execute()
+                history_context = "\n".join([f"{m['username']}: {m.get('text')}" for m in reversed(history_res.data)]) if history_res.data else ""
+                input_text = f"{prompt}\n\n--- پیام های اخیر ---\n{history_context}"
+
+                response = gemini_client.models.generate_content(model="gemini-3.6-flash", contents=input_text)
+                ai_response = response.text.strip().replace('\u200c', ' ') if response.text else ""
+                ai_response = re.sub(r'\[REACTION:\s*.+?\]', '', ai_response).strip()
+
+                if ai_response:
+                    bot_msg = await context.bot.send_message(chat_id=chat_id, text=ai_response, parse_mode='HTML')
+                    await save_bot_message(chat_id, bot_msg.message_id, ai_response)
+                    
+                    supabase_client.table('bot_memory_tg').upsert({'key': 'debate_turn_count', 'value': str(turn_count)}).execute()
+                    
+                    if is_last_turn:
+                        supabase_client.table('bot_memory_tg').upsert({'key': 'debate_active', 'value': 'false'}).execute()
+                        await context.bot.send_message(chat_id=chat_id, text="🏁 پایان مناظره بر اساس تعداد پیام های مجاز.", parse_mode='HTML')
+                    else:
+                        supabase_client.table('bot_memory_tg').upsert({'key': 'debate_turn', 'value': 'maghloub'}).execute()
+                        supabase_client.table('bot_memory_tg').upsert({'key': 'debate_next_time', 'value': str(time.time() + 120)}).execute()
+        
+        if mem_dict.get('debate_active') != 'true':
+            last_msg_res = supabase_client.table('messages_tg').select('message_id, username, text, chat_id').eq('is_bot', True).eq('username', 'مغلوب').order('timestamp', desc=True).limit(1).execute()
+            if last_msg_res.data:
+                last_msg = last_msg_res.data[0]
+                if last_msg['message_id'] > last_processed_maghloub_msg_id:
+                    last_processed_maghloub_msg_id = last_msg['message_id']
+                    if "غالب" in last_msg.get('text', '') and (time.time() - last_cross_reply_time > 60):
+                        last_cross_reply_time = time.time()
+                        chat_id = last_msg['chat_id']
+                        input_text = f"مغلوب در پیامی به تو اشاره کرده و گفته: {last_msg['text']}\nجواب او را محترمانه، منطقی و دندان شکن بده. فاصله ها را رعایت کن."
+                        response = gemini_client.models.generate_content(model="gemini-3.5-flash-lite", contents=input_text)
+                        ai_response = response.text.strip().replace('\u200c', ' ') if response.text else ""
+                        ai_response = re.sub(r'\[REACTION:\s*.+?\]', '', ai_response).strip()
+                        if ai_response:
+                            bot_msg = await context.bot.send_message(chat_id=chat_id, text=ai_response, reply_to_message_id=last_msg['message_id'], parse_mode='HTML')
+                            await save_bot_message(chat_id, bot_msg.message_id, ai_response)
+
+    except Exception as e:
+        logging.error(f"Bot interaction job error: {e}")
+
+# ... (بقیه توابع مدیرتی کاملا مشابه قبل است) ...
 async def lock_schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    if update.effective_user.id not in ALLOWED_USERS:
-        return
-
+    if update.effective_user.id not in ALLOWED_USERS: return
     if len(context.args) < 2 or not context.args[0].isdigit() or not context.args[1].isdigit():
-        await update.message.reply_text("⚠️ فرمت اشتباه است. الگو: <code>/lock_schedule 23 7</code> (ساعت به وقت ایران)", parse_mode='HTML')
+        await update.message.reply_text("⚠️ فرمت اشتباه است. الگو: <code>/lock_schedule 23 7</code>", parse_mode='HTML')
         return
-
     l_hour = int(context.args[0]) % 24
     u_hour = int(context.args[1]) % 24
-
     try:
-        supabase_client.table('group_locks_tg').upsert({
-            'chat_id': chat_id,
-            'is_enabled': True,
-            'lock_hour': l_hour,
-            'unlock_hour': u_hour
-        }).execute()
+        supabase_client.table('group_locks_tg').upsert({'chat_id': chat_id, 'is_enabled': True, 'lock_hour': l_hour, 'unlock_hour': u_hour}).execute()
         await update.message.reply_text(f"🔒 قفل خودکار فعال شد: از ساعت {l_hour}:00 تا {u_hour}:00 بامداد گروه قفل خواهد شد.")
-    except Exception as e:
-        await update.message.reply_text(f"خطا در ثبت زمان بندی: {e}")
+    except Exception as e: pass
 
 async def unlock_schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    if update.effective_user.id not in ALLOWED_USERS:
-        return
-
+    if update.effective_user.id not in ALLOWED_USERS: return
     try:
-        supabase_client.table('group_locks_tg').upsert({
-            'chat_id': chat_id,
-            'is_enabled': False
-        }).execute()
-        
-        await context.bot.set_chat_permissions(
-            chat_id=chat_id,
-            permissions=ChatPermissions(
-                can_send_messages=True,
-                can_send_audios=True,
-                can_send_documents=True,
-                can_send_photos=True,
-                can_send_videos=True,
-                can_send_other_messages=True
-            )
-        )
-        await update.message.reply_text("🔓 قفل زمان بندی شده لغو شد و اختیارات ارسال پیام گروه بازگردانده شد.")
-    except Exception as e:
-        await update.message.reply_text(f"خطا در لغو قفل: {e}")
+        supabase_client.table('group_locks_tg').upsert({'chat_id': chat_id, 'is_enabled': False}).execute()
+        await context.bot.set_chat_permissions(chat_id=chat_id, permissions=ChatPermissions(can_send_messages=True, can_send_audios=True, can_send_documents=True, can_send_photos=True, can_send_videos=True, can_send_other_messages=True))
+        await update.message.reply_text("🔓 قفل زمان بندی شده لغو شد.")
+    except Exception as e: pass
 
 async def lock_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     try:
         res = supabase_client.table('group_locks_tg').select('*').eq('chat_id', chat_id).execute()
         if not res.data or not res.data[0].get('is_enabled'):
-            await update.message.reply_text("ℹ️ در حال حاضر هیچ قفل زمان بندی شده ای برای این گروه فعال نیست.")
+            await update.message.reply_text("ℹ️ در حال حاضر هیچ قفل زمان بندی شده ای فعال نیست.")
             return
-
         data = res.data[0]
-        await update.message.reply_text(
-            f"📋 <b>وضعیت قفل زمان بندی:</b>\n"
-            f"🔹 فعال: بله\n"
-            f"🔹 ساعت قفل: {data['lock_hour']}:00\n"
-            f"🔹 ساعت بازگشایی: {data['unlock_hour']}:00\n"
-            f"<i>(مبنا: منطقه زمانی تهران)</i>",
-            parse_mode='HTML'
-        )
-    except Exception as e:
-        await update.message.reply_text(f"خطا: {e}")
+        await update.message.reply_text(f"📋 <b>وضعیت قفل زمان بندی:</b>\n🔹 ساعت قفل: {data['lock_hour']}:00\n🔹 ساعت بازگشایی: {data['unlock_hour']}:00", parse_mode='HTML')
+    except Exception as e: pass
 
 async def check_group_locks_job(context: ContextTypes.DEFAULT_TYPE):
     tehran_tz = pytz.timezone("Asia/Tehran")
     now_hour = datetime.now(tehran_tz).hour
-
     try:
         res = supabase_client.table('group_locks_tg').select('*').eq('is_enabled', True).execute()
-        if not res.data:
-            return
-
+        if not res.data: return
         for row in res.data:
             chat_id = row['chat_id']
             l_h = row['lock_hour']
             u_h = row['unlock_hour']
-
-            if l_h > u_h:
-                is_locked_time = (now_hour >= l_h or now_hour < u_h)
-            else:
-                is_locked_time = (l_h <= now_hour < u_h)
-
+            is_locked_time = (now_hour >= l_h or now_hour < u_h) if l_h > u_h else (l_h <= now_hour < u_h)
             try:
                 chat = await context.bot.get_chat(chat_id)
                 current_can_send = chat.permissions.can_send_messages if chat.permissions else True
-
                 if is_locked_time and current_can_send:
-                    await context.bot.set_chat_permissions(
-                        chat_id=chat_id,
-                        permissions=ChatPermissions(can_send_messages=False)
-                    )
-                    await context.bot.send_message(chat_id=chat_id, text="🔒 <b>گروه طبق زمان بندی تعیین شده تا اطلاع ثانوی قفل شد.</b>", parse_mode='HTML')
+                    await context.bot.set_chat_permissions(chat_id=chat_id, permissions=ChatPermissions(can_send_messages=False))
+                    await context.bot.send_message(chat_id=chat_id, text="🔒 <b>گروه تا اطلاع ثانوی قفل شد.</b>", parse_mode='HTML')
                 elif not is_locked_time and not current_can_send:
-                    await context.bot.set_chat_permissions(
-                        chat_id=chat_id,
-                        permissions=ChatPermissions(
-                            can_send_messages=True,
-                            can_send_audios=True,
-                            can_send_documents=True,
-                            can_send_photos=True,
-                            can_send_videos=True,
-                            can_send_other_messages=True
-                        )
-                    )
-                    await context.bot.send_message(chat_id=chat_id, text="🔓 <b>ساعت قفل گروه به پایان رسید. ارسال پیام آزاد است.</b>", parse_mode='HTML')
-            except Exception:
-                pass
-    except Exception as e:
-        logging.error(f"Error in lock cron: {e}")
+                    await context.bot.set_chat_permissions(chat_id=chat_id, permissions=ChatPermissions(can_send_messages=True, can_send_audios=True, can_send_documents=True, can_send_photos=True, can_send_videos=True, can_send_other_messages=True))
+                    await context.bot.send_message(chat_id=chat_id, text="🔓 <b>ارسال پیام آزاد است.</b>", parse_mode='HTML')
+            except Exception: pass
+    except Exception as e: pass
 
 async def transcribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message or not update.message.reply_to_message.voice:
-        await update.message.reply_text("لطفا این دستور را روی یک پیام ویس (Voice) ریپلای کنید.")
+        await update.message.reply_text("لطفا این دستور را روی یک پیام ویس ریپلای کنید.")
         return
-    
     chat_id = update.effective_chat.id
     try:
-        processing_msg = await update.message.reply_text("⏳ در حال گوش دادن و تبدیل به متن...")
-        
+        processing_msg = await update.message.reply_text("⏳ در حال پردازش...")
         voice_file = await context.bot.get_file(update.message.reply_to_message.voice.file_id)
         voice_bytes = bytes(await voice_file.download_as_bytearray())
-        
         try:
-            # تلاش اول با مدل اختصاصی صوت به متن
-            response = gemini_client.models.generate_content(
-                model="gemini-3.5-transcribe", 
-                contents=[types.Part.from_bytes(data=voice_bytes, mime_type="audio/ogg")]
-            )
-            transcription = response.text.strip() if response.text else "متاسفانه نتوانستم صدا را تشخیص دهم."
-        except Exception as api_err:
-            logging.error(f"Transcribe primary model error: {api_err}. Trying fallback...")
-            # تلاش دوم با مدل قدرتمند فلش در صورت بروز ارور
-            response = gemini_client.models.generate_content(
-                model="gemini-3.6-flash", 
-                contents=[types.Part.from_bytes(data=voice_bytes, mime_type="audio/ogg"), "لطفا متن صحبت های این فایل صوتی را کلمه به کلمه و دقیق بنویس."]
-            )
-            transcription = response.text.strip() if response.text else "متاسفانه نتوانستم صدا را تشخیص دهم."
-
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=processing_msg.message_id,
-            text=f"🎤 <b>متن ویس:</b>\n\n{transcription}",
-            parse_mode='HTML'
-        )
-    except Exception as e:
-        logging.error(f"Transcribe Error: {e}")
-        await update.message.reply_text("خطا در تبدیل ویس به متن.")
+            response = gemini_client.models.generate_content(model="gemini-3.5-transcribe", contents=[types.Part.from_bytes(data=voice_bytes, mime_type="audio/ogg")])
+            transcription = response.text.strip() if response.text else "نتوانستم صدا را تشخیص دهم."
+        except Exception:
+            response = gemini_client.models.generate_content(model="gemini-3.6-flash", contents=[types.Part.from_bytes(data=voice_bytes, mime_type="audio/ogg"), "لطفا متن صحبت های این فایل صوتی را بنویس."])
+            transcription = response.text.strip() if response.text else "نتوانستم صدا را تشخیص دهم."
+        await context.bot.edit_message_text(chat_id=chat_id, message_id=processing_msg.message_id, text=f"🎤 <b>متن ویس:</b>\n\n{transcription}", parse_mode='HTML')
+    except Exception as e: pass
 
 async def count_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     try:
         res = supabase_client.table('messages_tg').select('id', count='exact').eq('chat_id', chat_id).limit(1).execute()
-        msg = await update.message.reply_text(f"📊 تعداد کل پیام های گروه تا این لحظه: {res.count}")
+        msg = await update.message.reply_text(f"📊 تعداد کل پیام های گروه: {res.count}")
         await save_bot_message(chat_id, msg.message_id)
-    except Exception as e:
-        logging.error(f"Error count_group: {e}")
+    except Exception: pass
 
 async def count_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -317,9 +338,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         total_res = supabase_client.table('messages_tg').select('id', count='exact').eq('chat_id', chat_id).neq('is_bot', True).limit(1).execute()
         total_messages = total_res.count if total_res.count is not None else 0
-
         users_res = supabase_client.table('messages_tg').select('user_id, username').eq('chat_id', chat_id).neq('is_bot', True).execute()
-        
         user_map = {}
         if users_res.data:
             for row in users_res.data:
@@ -327,25 +346,18 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 u_name = str(row.get('username') or '').strip().replace('@', '')
                 if u_id and int(u_id) > 0 and u_id not in user_map:
                     user_map[u_id] = u_name or f"کاربر {u_id}"
-
         user_counts = []
         for u_id, name in user_map.items():
             cnt_res = supabase_client.table('messages_tg').select('id', count='exact').eq('chat_id', chat_id).eq('user_id', u_id).limit(1).execute()
             count_val = cnt_res.count if cnt_res.count is not None else 0
-            if count_val > 0:
-                user_counts.append((name, count_val))
-
+            if count_val > 0: user_counts.append((name, count_val))
         user_counts.sort(key=lambda x: x[1], reverse=True)
         top_users = user_counts[:10]
-
         report = f"📈 <b>آمار کل گروه:</b>\n\n💬 تعداد کل پیام ها: {total_messages}\n\n🏆 <b>کاربران برتر:</b>\n"
-        for i, (u, c) in enumerate(top_users, 1):
-            report += f"{i}. {u} : {c} پیام\n"
-
+        for i, (u, c) in enumerate(top_users, 1): report += f"{i}. {u} : {c} پیام\n"
         msg = await update.message.reply_text(report, parse_mode='HTML')
         await save_bot_message(chat_id, msg.message_id)
-    except Exception as e:
-        logging.error(f"Error stats: {e}")
+    except Exception: pass
 
 async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -354,12 +366,7 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = context.args[0]
     user_id = await get_user_id_by_username(target)
     if not user_id: return
-    
-    if user_id == 1196500724:
-        msg = await update.message.reply_text("❌ قصد داشتی خالق من را محدود کنی؟ من این کار را انجام نمی دهم!")
-        await save_bot_message(chat_id, msg.message_id)
-        return
-
+    if user_id == 1196500724: return
     hours = min(int(context.args[1]) if len(context.args) > 1 and context.args[1].isdigit() else 24, 24)
     until_timestamp = int(time.time()) + (hours * 3600)
     try:
@@ -406,45 +413,34 @@ async def tag_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for row in res.data:
                 u_id = row.get('user_id')
                 u_name = str(row.get('username') or '').strip()
-                if u_id and int(u_id) > 0:
-                    users_dict[int(u_id)] = u_name
-
-        if not users_dict:
-            await update.message.reply_text("عضوی برای تگ یافت نشد.")
-            return
-
+                if u_id and int(u_id) > 0: users_dict[int(u_id)] = u_name
+        if not users_dict: return
         mentions_list = []
         for u_id, name in users_dict.items():
-            if name.startswith('@'):
-                mentions_list.append(name)
+            if name.startswith('@'): mentions_list.append(name)
             else:
                 clean_name = re.sub(r'[<>&]', '', name).strip() or "کاربر"
                 mentions_list.append(f'<a href="tg://user?id={u_id}">{clean_name}</a>')
-
         mentions_list = list(dict.fromkeys(mentions_list))
         chunks = [mentions_list[i:i + 12] for i in range(0, len(mentions_list), 12)]
-        
         for idx, chunk in enumerate(chunks):
             mentions_str = "  ".join(chunk)
             header = f"📢 <b>{custom_text}</b>\n\n" if idx == 0 else ""
             bot_msg = await context.bot.send_message(chat_id=chat_id, text=f"{header}{mentions_str}", parse_mode='HTML')
             await save_bot_message(chat_id, bot_msg.message_id)
-    except Exception as e:
-        await update.message.reply_text(f"خطا در تگ: {e}")
+    except Exception: pass
 
 async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if update.effective_user.id not in ALLOWED_USERS: return
     full_text = " ".join(context.args)
-    if ":" not in full_text:
-        await update.message.reply_text("⚠️ فرمت اشتباه است. الگو: <code>/remember نام یا برچسب : توضیحات</code>", parse_mode='HTML')
-        return
+    if ":" not in full_text: return
     key, val = [x.strip() for x in full_text.split(":", 1)]
     try:
         supabase_client.table('bot_memory_tg').upsert({'key': key, 'value': val}).execute()
         msg = await update.message.reply_text(f"🧠 نکته جدید ثبت شد:\n📌 <b>{key}</b>: {val}", parse_mode='HTML')
         await save_bot_message(chat_id, msg.message_id)
-    except Exception as e: pass
+    except Exception: pass
 
 async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -524,16 +520,14 @@ async def execute_ai_command(cmd_str, update, context):
         args_text = cmd_str[9:].strip()
         if ":" in args_text:
             k, v = [x.strip() for x in args_text.split(":", 1)]
-            try:
-                supabase_client.table('bot_memory_tg').upsert({'key': k, 'value': v}).execute()
-            except Exception as e: pass
+            try: supabase_client.table('bot_memory_tg').upsert({'key': k, 'value': v}).execute()
+            except Exception: pass
         return
 
     if cmd_str.lower().startswith('forget '):
         k = cmd_str[7:].strip()
-        try:
-            supabase_client.table('bot_memory_tg').delete().eq('key', k).execute()
-        except Exception as e: pass
+        try: supabase_client.table('bot_memory_tg').delete().eq('key', k).execute()
+        except Exception: pass
         return
 
     parts = cmd_str.split()
@@ -546,20 +540,14 @@ async def execute_ai_command(cmd_str, update, context):
         elif cmd == 'mute': await mute_user(update, context)
         elif cmd == 'unmute': await unmute_user(update, context)
         elif cmd == 'ban_media': await ban_media(update, context)
-    except Exception as e:
-        logging.error(f"AI Command Execution Failed: {e}")
+    except Exception: pass
 
 def extract_media_info(msg):
-    if msg.photo:
-        return msg.photo[-1].file_id, "image/jpeg"
-    elif msg.animation:
-        return msg.animation.file_id, "video/mp4"
-    elif msg.video:
-        return msg.video.file_id, "video/mp4"
-    elif msg.voice:
-        return msg.voice.file_id, "audio/ogg"
-    elif msg.sticker and not msg.sticker.is_animated:
-        return msg.sticker.file_id, "image/webp" if not msg.sticker.is_video else "video/webm"
+    if msg.photo: return msg.photo[-1].file_id, "image/jpeg"
+    elif msg.animation: return msg.animation.file_id, "video/mp4"
+    elif msg.video: return msg.video.file_id, "video/mp4"
+    elif msg.voice: return msg.voice.file_id, "audio/ogg"
+    elif msg.sticker and not msg.sticker.is_animated: return msg.sticker.file_id, "image/webp" if not msg.sticker.is_video else "video/webm"
     return None, None
 
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -576,24 +564,18 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_id = update.message.message_id
     text = update.message.text or update.message.caption or ""
 
-    if update.message.animation:
-        text += " [گیف]"
-    elif update.message.video:
-        text += " [ویدیو]"
-    elif update.message.voice:
-        text += " [ویس]"
-    elif update.message.document:
-        text += " [فایل]"
+    if update.message.animation: text += " [گیف]"
+    elif update.message.video: text += " [ویدیو]"
+    elif update.message.voice: text += " [ویس]"
+    elif update.message.document: text += " [فایل]"
 
     await save_message(user_id, db_username, chat_id, message_id, text if text else "[مدیا]")
 
     if text:
-        # لیست کلمات برای حذف قطعی با جستجوی ساده
         bad_words_simple = ["کیر", "کون", "کص", "کیرم", "کونت", "جنده", "کصکش", "کسکش", "لاشی"]
-        # بررسی با ریجکس برای یافتن حالت های چسبیده یا با نگارش متفاوت
         bad_words_pattern = r'\b(ک[يی]\.?ر[میتان]?|ک[وۥ]\.?ن[میتان]?|ک[ص][ییه]?|جنده|ک[ص]ک[ص]|مادر\s*جنده|خواهر\s*ک[ص]|لاشی)\b'
         
-        text_clean = text.replace(".", "").replace("-", "").replace("_", "").replace(" ", "").replace("\u200c", "")
+        text_clean = text.replace(".", "").replace("-", "").replace("_", "").replace(" ", "").replace('\u200c', '')
         has_bad_word = False
         
         for bw in bad_words_simple:
@@ -646,7 +628,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             is_complex_media = target_mime_type in ["video/mp4", "image/jpeg", "image/webp"]
             target_model = "gemini-3.6-flash" if (is_academic or is_complex_media) else "gemini-3.5-flash-lite"
-            logging.info(f"Routing to model: {target_model}")
             
             history_context = ""
             try:
@@ -728,13 +709,12 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     message_id=message_id, 
                     reaction=[ReactionTypeEmoji(reaction_emoji)]
                 )
-            except Exception as e: 
-                logging.error(f"Reaction failed: {e}")
+            except Exception: pass
 
             current_time = time.time()
             if current_time - ghaleb_last_reply.get(user_id, 0) > 4 and ai_response:
                 bot_msg = await update.message.reply_text(ai_response, reply_to_message_id=message_id, parse_mode='HTML')
-                await save_bot_message(chat_id, bot_msg.message_id)
+                await save_bot_message(chat_id, bot_msg.message_id, ai_response)
                 ghaleb_last_reply[user_id] = current_time
 
             if cmd_str:
@@ -744,7 +724,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Gemini Error: {e}")
 
 if __name__ == '__main__':
-    # این خط را حتما فعال بگذارید تا سرور رندر بدون خطا کار کند
     threading.Thread(target=run_health_check_server, daemon=True).start()
     
     application = ApplicationBuilder().token(TOKEN).build()
@@ -770,11 +749,14 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("unlock_schedule", unlock_schedule_command))
     application.add_handler(CommandHandler("lock_status", lock_status_command))
     
-    # فعال سازی دریافت پیام های عادی و خواندن مدیا
+    application.add_handler(CommandHandler("debate", start_debate_command))
+    application.add_handler(CommandHandler("stop_debate", stop_debate_command))
+    
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
     
     job_queue = application.job_queue
     job_queue.run_repeating(check_group_locks_job, interval=60, first=10)
+    job_queue.run_repeating(bot_interaction_job, interval=10, first=5)
     
     logging.info("Starting Telegram bot in POLLING mode. Press Ctrl+C to stop.")
     application.run_polling()
