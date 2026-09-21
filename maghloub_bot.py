@@ -17,7 +17,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# استفاده از توکن های اختصاصی مغلوب
 TOKEN = os.getenv('MAGHLOUB_BOT_TOKEN')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
@@ -26,13 +25,13 @@ GEMINI_API_KEY = os.getenv('MAGHLOUB_GEMINI_API_KEY')
 supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# مغلوب نیازی به لیست ادمین ندارد چون قابلیت مدیریتی ندارد
 maghloub_last_reply = {}
 ai_enabled = True
 
 ALLOWED_GROUP_REACTIONS = [
     "🤓", "🙄", "🤨", "👎", "🤣", "🔥", "🤡", "🤔",
-    "💯", "😎", "🤷‍♂️", "🤷‍♀️", "🤦‍♂️", "🤦‍♀️", "👀"]
+    "💯", "😎", "🤷‍♂️", "🤷‍♀️", "🤦‍♂️", "🤦‍♀️", "👀"
+]
 
 async def save_bot_message(chat_id, message_id, text):
     try:
@@ -55,18 +54,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def disable_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ai_enabled
-    # فقط ادمین های اصلی می توانند مغلوب را ساکت کنند
     if update.effective_user.id in [1196500724, 6922089212, 522205183]:
         ai_enabled = False
         msg = await update.message.reply_text("🛑 باشه، فعلا سکوت می کنم. حقیقت همیشه تلخ است.")
-        await save_bot_message(chat_id, msg.message_id, msg.text)
+        await save_bot_message(update.effective_chat.id, msg.message_id, msg.text)
 
 async def enable_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ai_enabled
     if update.effective_user.id in [1196500724, 6922089212, 522205183]:
         ai_enabled = True
         msg = await update.message.reply_text("✅ دوباره برگشتم تا خواب راحت را از تعصبات شما بگیرم.")
-        await save_bot_message(chat_id, msg.message_id, msg.text)
+        await save_bot_message(update.effective_chat.id, msg.message_id, msg.text)
 
 def extract_media_info(msg):
     if msg.photo:
@@ -93,9 +91,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_id = update.message.message_id
     text = update.message.text or update.message.caption or ""
 
-    # مغلوب پیام های کاربران را در دیتابیس ذخیره نمی کند چون ربات «غالب» این کار را می کند.
-    # این کار از ذخیره پیام های تکراری جلوگیری می کند.
-
     is_reply_to_bot = False
     replied_text = ""
     target_media_id = None
@@ -105,7 +100,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         replied_msg = update.message.reply_to_message
         replied_user_name = replied_msg.from_user.first_name if replied_msg.from_user else "کاربر"
         
-        # اگر کسی روی پیام مغلوب ریپلای کند
         if replied_msg.from_user and replied_msg.from_user.id == context.bot.id:
             is_reply_to_bot = True
         
@@ -117,21 +111,11 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not target_media_id:
         target_media_id, target_mime_type = extract_media_info(update.message)
 
-    # چاپ پیام دریافتی در لاگ برای اطمینان از رسیدن آپدیت
     logging.info(f"Received message from {db_username}: {text[:30] if text else '[مدیا]'}")
 
-    # تطبیق نام مغلوب و یوزرنیم
-    bot_info = await context.bot.get_me()
-    bot_username = bot_info.username.lower() if bot_info.username else ""
-    
     text_lower = text.lower()
-    has_trigger_word = (
-        "مغلوب" in text or 
-        "مغلوبم" in text or 
-        (bot_username and f"@{bot_username}" in text_lower)
-    )
+    has_trigger_word = ("مغلوب" in text or "مغلوبم" in text)
 
-    # مداخله موردی در بحث‌های مربوط به غالب (در صورت تمایل)
     if "غالب" in text and not has_trigger_word and not is_reply_to_bot:
         import random
         if random.random() < 0.30:
@@ -149,7 +133,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             history_context = ""
             try:
-                # خواندن پیام ها از همان جدولی که غالب پر می کند
                 recent_msgs = supabase_client.table('messages_tg').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(20).execute()
                 if recent_msgs.data:
                     chat_history = [f"{m['username']}: {m.get('text') or '[مدیا]'}" for m in reversed(recent_msgs.data)]
@@ -165,7 +148,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 2. 🎯 ری اکشن پیام: پاسخ خود را دقیقا با فرمت [REACTION: EMOJI] شروع کن. ایموجی باید طعنه آمیز، انتقادی یا متفکرانه باشد مثل (🤓, 🙄, 🤡, 👎, 🔥, 🧠):
 {", ".join(ALLOWED_GROUP_REACTIONS)}
 3. 🚫 هرگز سلام و احوال پرسی نکن. مستقیم، قاطع و کوبنده وارد بحث شو.
-4. 🗣️ در بحث های سیاسی، بی رحمانه اما کاملا منطقی و مستدل استدلال کن. بهانه های طرفداران حکومت را با فکت و طعنه های سنگین رد کن. اگر کسی یا «غالب» حرف غیرمنطقی زد، او را با لحنی تمسخرآمیز اما علمی به چالش بکش.
+4. 🗣️ در بحث های سیاسی، بی رحمانه اما کاملا منطقی و مستدل استدلال کن. بهانه های طرفداران حکومت را با فکت و طعنه های سنگین رد کن. اگر کسی شعار داد یا حرف غیرمنطقی زد، او را با لحنی تمسخرآمیز اما علمی و صریح به چالش بکش.
 5. هرگز نگو "من یک هوش مصنوعی هستم". تو یک مبارز فکری هستی. 
 6. لحن تو باید با اعتماد به نفس بالا، کمی مغرورانه و در عین حال به شدت مستدل باشد. از کلمات قلمبه سلمبه کمتر استفاده کن و بیشتر با منطق برنده باش.
 7. اگر تصویر یا ویسی بود، مستقیما در مورد محتوای آن تحلیل انتقادی خود را بگو.
@@ -190,30 +173,41 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 prompt_contents.append(types.Part.from_bytes(data=media_bytes, mime_type=target_mime_type))
             prompt_contents.append(input_text)
             
+            # تنظیمات ایمنی برای جلوگیری از بلاک شدن بحث‌های سیاسی و تند
+            safety_settings = [
+                types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+            ]
+            config = types.GenerateContentConfig(safety_settings=safety_settings)
+
             response = gemini_client.models.generate_content(
                 model=target_model, 
-                contents=prompt_contents
+                contents=prompt_contents,
+                config=config
             )
-            ai_response = response.text.strip() if response.text else ""
-            
-            # حذف نیم فاصله ها
+
+            ai_response = ""
+            if response.text:
+                ai_response = response.text.strip()
+            elif response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                ai_response = response.candidates[0].content.parts[0].text.strip()
+
+            logging.info(f"Maghloub output received: {ai_response[:40] if ai_response else '[EMPTY]'}")
+
+            if not ai_response:
+                logging.warning("Maghloub received empty response from Gemini.")
+                return
+
             ai_response = ai_response.replace('\u200c', ' ')
 
             reaction_match = re.search(r'\[REACTION:\s*(.+?)\]', ai_response)
-            reaction_emoji = "🤓"
+            reaction_emoji = "😏"
             if reaction_match:
                 extracted_emoji = reaction_match.group(1).strip()
                 if extracted_emoji in ALLOWED_GROUP_REACTIONS:
                     reaction_emoji = extracted_emoji
                 ai_response = ai_response.replace(reaction_match.group(0), "").strip()
-
-            try:
-                await context.bot.set_message_reaction(
-                    chat_id=chat_id, 
-                    message_id=message_id, 
-                    reaction=[ReactionTypeEmoji(reaction_emoji)]
-                )
-            except Exception: pass
 
             current_time = time.time()
             if current_time - maghloub_last_reply.get(user_id, 0) > 3 and ai_response:
@@ -221,11 +215,20 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await save_bot_message(chat_id, bot_msg.message_id, ai_response)
                 maghloub_last_reply[user_id] = current_time
 
+                # ثبت ری‌اکشن پس از ارسال پیام
+                try:
+                    await context.bot.set_message_reaction(
+                        chat_id=chat_id, 
+                        message_id=message_id, 
+                        reaction=[ReactionTypeEmoji(reaction_emoji)]
+                    )
+                except Exception as r_err:
+                    logging.error(f"Reaction error: {r_err}")
+
         except Exception as e:
             logging.error(f"Maghloub Gemini Error: {e}")
 
 if __name__ == '__main__':
-    # مغلوب نیازی به وب سرور رندر ندارد، همان وب سرور غالب کانتینر را زنده نگه می دارد
     application = ApplicationBuilder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
