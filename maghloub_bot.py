@@ -133,7 +133,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             history_context = ""
             try:
-                recent_msgs = supabase_client.table('messages_tg').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(20).execute()
+                recent_msgs = supabase_client.table('messages_tg').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(40).execute()
                 if recent_msgs.data:
                     chat_history = [f"{m['username']}: {m.get('text') or '[مدیا]'}" for m in reversed(recent_msgs.data)]
                     history_context = "\n".join(chat_history)
@@ -155,7 +155,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 8. برای برجسته کردن متن در تلگرام فقط از تگ <b>متن</b> استفاده کن و از ستاره (*) استفاده نکن.
 """
             user_query = text if text else "لطفا این فایل یا تصویر را بررسی کن و نظرت را بگو."
-            input_text = f"{system_instruction}\n\n--- 20 پیام اخیر گروه ---\n{history_context}\n\n"
+            input_text = f"{system_instruction}\n\n--- 40 پیام اخیر گروه ---\n{history_context}\n\n"
             if replied_text:
                 input_text += f"--- پیامی که مستقیما به آن ریپلای شده ---\n{replied_text}\n\n"
             input_text += f"--- پیام فعلی کاربر ({db_username}) ---\n{user_query}"
