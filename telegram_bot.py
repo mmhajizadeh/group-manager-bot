@@ -111,7 +111,7 @@ def get_permanent_memories():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user.first_name
-    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 5.2\nتازه ها:\n- رفع کامل باگ گیر کردن مناظره و تایمر")
+    msg = await update.message.reply_text(f"🤖 سلام {user}! من غالب هستم. برای راهنما /help را بزن.\nنسخه ربات تلگرام: 5.3\nتازه ها:\n- رفع کامل باگ گیر کردن مناظره و تایمر\n- بهبود قابلیت سانسور")
     await save_bot_message(chat_id, msg.message_id, msg.text)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -582,9 +582,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tokens = re.findall(r'[\w]+', text.replace('\u200c', ''))
         
         bad_patterns = [
-            r'^(ک[يیی]?\.?ر[میتان]?|ک[يیی]?\.?ر[هیا]ت?)$',
-            r'^(ک[وۥ]?\.?ن[میتان]?|ک[وۥ]?\.?ن[هیا]ت?|ک[وۥ]نی)$',
-            r'^(ک[صس][میتان]?|ک[صس]خول|ک[صس]شعر|ک[صس]کش[ها]?|ک[صس]لیس)$',
+            r'^ک[يی]\.?ر[میتان]?$',
+            r'^ک[وۥ]\.?ن([میتان]|ی|[هیا]ت)?$',
+            r'^ک[ص]([میتان]|خول|شعر|کش[ها]?|لیس)?$',
             r'^(جنده|جند[هگی]|لاشی)$'
         ]
         
