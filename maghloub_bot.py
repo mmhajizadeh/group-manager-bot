@@ -45,6 +45,17 @@ async def save_bot_message(chat_id, message_id, text=""):
     except Exception as e:
         logging.error(f"Database error: {e}")
 
+# تابع ایمن برای آپدیت اطلاعات مناظره در حافظه
+def set_memory(k, v):
+    try:
+        res = supabase_client.table('bot_memory_tg').select('key').eq('key', k).execute()
+        if res.data:
+            supabase_client.table('bot_memory_tg').update({'value': str(v)}).eq('key', k).execute()
+        else:
+            supabase_client.table('bot_memory_tg').insert({'key': k, 'value': str(v)}).execute()
+    except Exception as e:
+        logging.error(f"Memory update error for {k}: {e}")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global maghloub_global_last_reply
     chat_id = update.effective_chat.id
@@ -88,7 +99,6 @@ async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
         res = supabase_client.table('bot_memory_tg').select('key, value').execute()
         mem_dict = {row['key']: row['value'] for row in res.data} if res.data else {}
 
-        # بخش مناظره: حتی اگر ai_enabled خاموش باشد، این بخش با قدرت کار می کند!
         if mem_dict.get('debate_active') == 'true' and mem_dict.get('debate_turn') == 'maghloub':
             next_time = float(mem_dict.get('debate_next_time', 0))
             if time.time() >= next_time:
@@ -97,7 +107,7 @@ async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
                 turn_count = int(mem_dict.get('debate_turn_count', 0))
                 
                 turn_count += 1
-                is_last_turn = (turn_count >= 6)
+                is_last_turn = (turn_count >= 12)
 
                 ghaleb_msg_res = supabase_client.table('messages_tg').select('text').eq('chat_id', chat_id).eq('username', 'غالب').order('timestamp', desc=True).limit(1).execute()
                 ghaleb_last_text = ghaleb_msg_res.data[0]['text'] if ghaleb_msg_res.data else "بحث را شروع کن."
@@ -107,9 +117,9 @@ async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
                 if is_last_turn:
                     prompt += "\nتوجه: این پیام آخر مناظره است. بحث را با یک نتیجه گیری کوبنده تمام کن."
                 else:
-                    prompt += "\nپاسخ را کاملا کوتاه و حداکثر در 4 جمله بنویس."
+                    prompt += "\nپاسخ را مشروح تر، کوبنده و در 5 الی 6 جمله بنویس تا بحث به خوبی شکل بگیرد."
 
-                history_res = supabase_client.table('messages_tg').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(15).execute()
+                history_res = supabase_client.table('messages_tg').select('username, text').eq('chat_id', chat_id).order('timestamp', desc=True).limit(10).execute()
                 history_context = "\n".join([f"{m['username']}: {m.get('text')}" for m in reversed(history_res.data)]) if history_res.data else ""
                 input_text = f"{prompt}\n\n--- پیام های اخیر ---\n{history_context}"
 
@@ -136,22 +146,21 @@ async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
                     maghloub_global_last_reply = time.time()
                     await save_bot_message(chat_id, bot_msg.message_id, ai_response)
                     
-                    supabase_client.table('bot_memory_tg').upsert({'key': 'debate_turn_count', 'value': str(turn_count)}).execute()
+                    set_memory('debate_turn_count', str(turn_count))
                     
                     if is_last_turn:
-                        supabase_client.table('bot_memory_tg').upsert({'key': 'debate_active', 'value': 'false'}).execute()
+                        set_memory('debate_active', 'false')
                     else:
-                        supabase_client.table('bot_memory_tg').upsert({'key': 'debate_turn', 'value': 'ghaleb'}).execute()
-                        supabase_client.table('bot_memory_tg').upsert({'key': 'debate_next_time', 'value': str(time.time() + 120)}).execute()
+                        set_memory('debate_turn', 'ghaleb')
+                        set_memory('debate_next_time', str(time.time() + 120))
         
-        # پاسخ به غالب در چت عادی (فقط اگر ai_enabled روشن باشد اجرا می شود)
         if ai_enabled and mem_dict.get('debate_active') != 'true':
             last_msg_res = supabase_client.table('messages_tg').select('message_id, username, text, chat_id').eq('is_bot', True).eq('username', 'غالب').order('timestamp', desc=True).limit(1).execute()
             if last_msg_res.data:
                 last_msg = last_msg_res.data[0]
                 if last_msg['message_id'] > last_processed_ghaleb_msg_id:
                     last_processed_ghaleb_msg_id = last_msg['message_id']
-                    if "مغلوب" in last_msg.get('text', '') and (time.time() - maghloub_global_last_reply >= 30):
+                    if "مغلوب" in last_msg.get('text', '') and (time.time() - maghloub_global_last_reply >= 60):
                         last_cross_reply_time = time.time()
                         chat_id = last_msg['chat_id']
                         input_text = f"غالب در پیامی به تو اشاره کرده و گفته: {last_msg['text']}\nجواب او را با طعنه و کاملا کوتاه (حداکثر 2 جمله) بده. فاصله ها را رعایت کن."
@@ -172,7 +181,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_chat or not update.effective_user:
         return
 
-    # اگر مغلوب خاموش شده باشد، هیچ جوابی به اعضای گروه نمی دهد
     if not ai_enabled:
         return
 
