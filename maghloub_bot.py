@@ -130,7 +130,7 @@ async def bot_interaction_job(context: ContextTypes.DEFAULT_TYPE):
                 ]
                 config = types.GenerateContentConfig(safety_settings=safety_settings)
 
-                response = gemini_client.models.generate_content(model="gemini-3.6-flash", contents=input_text, config=config)
+                response = gemini_client.models.generate_content(model="gemini-3.5-flash-lite", contents=input_text, config=config)
                 
                 ai_response = ""
                 if response.text:
@@ -235,7 +235,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_academic = any(kw in text for kw in academic_keywords)
             is_complex_media = target_mime_type in ["video/mp4", "image/jpeg", "image/webp"]
 
-            target_model = "gemini-3.6-flash" if (is_academic or is_complex_media) else "gemini-3.5-flash-lite"
+            target_model = "gemini-3.5-flash-lite"
 
             history_context = ""
             try:
